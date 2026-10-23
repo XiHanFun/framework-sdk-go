@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/xihanfun/framework-sdk-go/invocation"
 	"github.com/xihanfun/framework-sdk-go/operation"
@@ -168,13 +167,10 @@ func (s *state) relay(ctx *invocation.Context, request RelayRequest) primitives.
 	return primitives.Ok(json.RawMessage(response.Payload))
 }
 
-// crash 故意让进程异常退出：宿主应记为崩溃并按退避重启。
+// crash 故意让进程异常退出而不应答：宿主应记为崩溃并按退避重启。
 func (s *state) crash(*invocation.Context, struct{}) primitives.Result[struct{}] {
 	slog.Default().Error("crashing on request")
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		os.Exit(3)
-	}()
+	os.Exit(3)
 	return primitives.Ok(struct{}{})
 }
 
