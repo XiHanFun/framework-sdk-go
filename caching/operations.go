@@ -21,7 +21,7 @@ type GetResponse struct {
 	Value *string `json:"value"`
 }
 
-// SetRequest 是 cache-entries.set 与 cache-entries.try-add 的请求；ttlMs 与 slidingMs 用指针区分"没给"与"给了 0"。
+// SetRequest 是 cache-entries.set 与 cache-entries.try-add 的请求，也是 cache-entries.set-many 的一项；ttlMs 与 slidingMs 用指针区分"没给"与"给了 0"。
 type SetRequest struct {
 	Key       string `json:"key"`
 	Value     string `json:"value"`
@@ -53,7 +53,27 @@ type TryRemoveRequest struct {
 	Expected string `json:"expected"`
 }
 
-// RegisterOperations 把 Store 暴露成操作集：五个 internal、不对外发布的操作。
+// KeysRequest 是 cache-entries.get-many 与 cache-entries.remove-many 的请求。
+type KeysRequest struct {
+	Keys []string `json:"keys"`
+}
+
+// GetManyResponse 是 cache-entries.get-many 的响应：与 keys 等长，每项是值的 base64 或 null。
+type GetManyResponse struct {
+	Values []*string `json:"values"`
+}
+
+// SetManyRequest 是 cache-entries.set-many 的请求。
+type SetManyRequest struct {
+	Entries []SetRequest `json:"entries"`
+}
+
+// RemovedManyResponse 是 cache-entries.remove-many 的响应：与 keys 等长的布尔数组。
+type RemovedManyResponse struct {
+	Removed []bool `json:"removed"`
+}
+
+// RegisterOperations 把 Store 暴露成操作集：八个 internal、不对外发布的操作。
 func RegisterOperations(registry *operation.Registry, store Store) error {
 	adapter := &operations{store: store}
 	if err := operation.Add(registry, contract(OperationGet), operation.HandlerFunc[GetRequest, GetResponse](adapter.get), nil, ""); err != nil {
@@ -68,7 +88,16 @@ func RegisterOperations(registry *operation.Registry, store Store) error {
 	if err := operation.Add(registry, contract(OperationRemove), operation.HandlerFunc[RemoveRequest, RemovedResponse](adapter.remove), nil, ""); err != nil {
 		return err
 	}
-	return operation.Add(registry, contract(OperationTryRemove), operation.HandlerFunc[TryRemoveRequest, RemovedResponse](adapter.tryRemove), nil, "")
+	if err := operation.Add(registry, contract(OperationTryRemove), operation.HandlerFunc[TryRemoveRequest, RemovedResponse](adapter.tryRemove), nil, ""); err != nil {
+		return err
+	}
+	if err := operation.Add(registry, contract(OperationGetMany), operation.HandlerFunc[KeysRequest, GetManyResponse](adapter.getMany), nil, ""); err != nil {
+		return err
+	}
+	if err := operation.Add(registry, contract(OperationSetMany), operation.HandlerFunc[SetManyRequest, Empty](adapter.setMany), nil, ""); err != nil {
+		return err
+	}
+	return operation.Add(registry, contract(OperationRemoveMany), operation.HandlerFunc[KeysRequest, RemovedManyResponse](adapter.removeMany), nil, "")
 }
 
 // contract 创建操作集的契约：internal、不暴露。
@@ -139,6 +168,58 @@ func (o *operations) tryRemove(ctx *invocation.Context, request TryRemoveRequest
 		return primitives.Fail[RemovedResponse](storeError(storeErr))
 	}
 	return primitives.Ok(RemovedResponse{Removed: removed})
+}
+
+// getMany 实现 cache-entries.get-many：空数组不触后端，响应数组与 keys 等长（空时是 []，不是 null）。
+func (o *operations) getMany(ctx *invocation.Context, request KeysRequest) primitives.Result[GetManyResponse] {
+	values := make([]*string, 0, len(request.Keys))
+	if len(request.Keys) == 0 {
+		return primitives.Ok(GetManyResponse{Values: values})
+	}
+	lookups, err := o.store.GetMany(ctx, request.Keys)
+	if err != nil {
+		return primitives.Fail[GetManyResponse](storeError(err))
+	}
+	for _, lookup := range lookups {
+		if !lookup.Found {
+			values = append(values, nil)
+			continue
+		}
+		encoded := base64.StdEncoding.EncodeToString(lookup.Value)
+		values = append(values, &encoded)
+	}
+	return primitives.Ok(GetManyResponse{Values: values})
+}
+
+// setMany 实现 cache-entries.set-many：先解码并校验全部项（出错项带 index），再一次写入。
+func (o *operations) setMany(ctx *invocation.Context, request SetManyRequest) primitives.Result[Empty] {
+	entries := make([]Entry, 0, len(request.Entries))
+	for index, item := range request.Entries {
+		value, options, err := decodeSet(item)
+		if err != nil {
+			return primitives.Fail[Empty](withIndex(err, index))
+		}
+		entries = append(entries, Entry{Key: item.Key, Value: value, Options: options})
+	}
+	if len(entries) == 0 {
+		return primitives.Ok(Empty{})
+	}
+	if err := o.store.SetMany(ctx, entries); err != nil {
+		return primitives.Fail[Empty](storeError(err))
+	}
+	return primitives.Ok(Empty{})
+}
+
+// removeMany 实现 cache-entries.remove-many：空数组不触后端，响应数组与 keys 等长。
+func (o *operations) removeMany(ctx *invocation.Context, request KeysRequest) primitives.Result[RemovedManyResponse] {
+	if len(request.Keys) == 0 {
+		return primitives.Ok(RemovedManyResponse{Removed: []bool{}})
+	}
+	removed, err := o.store.RemoveMany(ctx, request.Keys)
+	if err != nil {
+		return primitives.Fail[RemovedManyResponse](storeError(err))
+	}
+	return primitives.Ok(RemovedManyResponse{Removed: removed})
 }
 
 // decodeSet 解码写入请求：键与选项按子系统规则校验（插件侧也必须校验），值是 base64。

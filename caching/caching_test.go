@@ -14,6 +14,7 @@ import (
 	"github.com/xihanfun/framework-sdk-go/caching"
 	"github.com/xihanfun/framework-sdk-go/invocation"
 	"github.com/xihanfun/framework-sdk-go/operation"
+	"github.com/xihanfun/framework-sdk-go/primitives"
 )
 
 // clock 是可拨动的时钟。
@@ -220,4 +221,88 @@ func contains(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func TestMemoryStoreBatchOperations(t *testing.T) {
+	store, clock := newStore(t, caching.WithCapacity(3))
+	ctx := context.Background()
+
+	// 空集合不触后端、返回空结果
+	if lookups, err := store.GetMany(ctx, nil); err != nil || len(lookups) != 0 {
+		t.Fatalf("empty get-many: %v %v", lookups, err)
+	}
+	if err := store.SetMany(ctx, nil); err != nil {
+		t.Fatalf("empty set-many: %v", err)
+	}
+	if removed, err := store.RemoveMany(ctx, []string{}); err != nil || len(removed) != 0 {
+		t.Fatalf("empty remove-many: %v %v", removed, err)
+	}
+
+	// 同一键出现多次后者覆盖；各项带各自的过期
+	err := store.SetMany(ctx, []caching.Entry{
+		{Key: "a", Value: []byte("1"), Options: caching.Options{TimeToLive: time.Second}},
+		{Key: "b", Value: []byte("2"), Options: caching.Options{Sliding: 2 * time.Second}},
+		{Key: "a", Value: []byte("3"), Options: caching.Options{TimeToLive: time.Second}},
+	})
+	if err != nil {
+		t.Fatalf("set-many: %v", err)
+	}
+	lookups, err := store.GetMany(ctx, []string{"a", "missing", "b", "a"})
+	if err != nil {
+		t.Fatalf("get-many: %v", err)
+	}
+	if string(lookups[0].Value) != "3" || lookups[1].Found || string(lookups[2].Value) != "2" || string(lookups[3].Value) != "3" {
+		t.Fatalf("get-many results: %+v", lookups)
+	}
+
+	// 滑动过期在批量读取时延长，绝对过期不延长
+	clock.Advance(1500 * time.Millisecond)
+	lookups, _ = store.GetMany(ctx, []string{"a", "b"})
+	if lookups[0].Found || !lookups[1].Found {
+		t.Fatalf("after 1.5s: %+v", lookups)
+	}
+	clock.Advance(1500 * time.Millisecond)
+	if value, found, _ := store.Get(ctx, "b"); !found || string(value) != "2" {
+		t.Fatalf("sliding entry should have been extended by get-many")
+	}
+
+	// 容量按去重后的新键数整批判定：超出时一条都不写
+	if err := store.SetMany(ctx, []caching.Entry{{Key: "c", Value: []byte("c")}, {Key: "d", Value: []byte("d")}, {Key: "e", Value: []byte("e")}}); err == nil || err.(*primitives.Error).Code != caching.ErrorCodeUnavailable {
+		t.Fatalf("capacity: %v", err)
+	}
+	if _, found, _ := store.Get(ctx, "c"); found {
+		t.Fatalf("a rejected batch must not write partially")
+	}
+	if err := store.SetMany(ctx, []caching.Entry{{Key: "c", Value: []byte("c")}, {Key: "c", Value: []byte("c2")}, {Key: "b", Value: []byte("b2")}}); err != nil {
+		t.Fatalf("duplicates and overwrites do not take new slots: %v", err)
+	}
+
+	// 逐键删除结果与入参等长，同一键第二次为假
+	removed, err := store.RemoveMany(ctx, []string{"c", "c", "b", "missing"})
+	if err != nil {
+		t.Fatalf("remove-many: %v", err)
+	}
+	if want := []bool{true, false, true, false}; !equalBools(removed, want) {
+		t.Fatalf("remove-many results %v, want %v", removed, want)
+	}
+
+	// 不合法的键整批拒绝并带下标
+	if _, err := store.GetMany(ctx, []string{"ok", "not ok"}); err == nil || err.(*primitives.Error).Details["index"] != 1 {
+		t.Fatalf("invalid key index: %v", err)
+	}
+	if err := store.SetMany(ctx, []caching.Entry{{Key: "ok"}, {Key: "x", Options: caching.Options{TimeToLive: time.Second, Sliding: time.Second}}}); err == nil || err.(*primitives.Error).Details["index"] != 1 {
+		t.Fatalf("invalid options index: %v", err)
+	}
+}
+
+func equalBools(a, b []bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

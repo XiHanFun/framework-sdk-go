@@ -111,3 +111,18 @@ func (h *storeHolder) Remove(ctx context.Context, key string) (bool, error) {
 func (h *storeHolder) TryRemove(ctx context.Context, key string, expected []byte) (bool, error) {
 	return h.store.TryRemove(ctx, key, expected)
 }
+
+// GetMany 实现 caching.Store。
+func (h *storeHolder) GetMany(ctx context.Context, keys []string) ([]caching.Lookup, error) {
+	return h.store.GetMany(ctx, keys)
+}
+
+// SetMany 实现 caching.Store。
+func (h *storeHolder) SetMany(ctx context.Context, entries []caching.Entry) error {
+	return h.store.SetMany(ctx, entries)
+}
+
+// RemoveMany 实现 caching.Store。
+func (h *storeHolder) RemoveMany(ctx context.Context, keys []string) ([]bool, error) {
+	return h.store.RemoveMany(ctx, keys)
+}
