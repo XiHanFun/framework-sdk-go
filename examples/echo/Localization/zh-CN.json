@@ -1,5 +1,6 @@
 {
   "echogo.host.unavailable": "宿主回调端点不可用。",
+  "echogo.text.missing": "{operation} 的文本不能为空。",
   "echogo.configuration.invalid": "XiHan:Echo 配置不合法：{reason}。",
   "echoes.create.title": "回声",
   "echoes.create.description": "回声文本，附问候语、租户、主体与关联 ID。",

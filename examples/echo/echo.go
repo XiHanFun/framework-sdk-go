@@ -31,6 +31,8 @@ var localization embed.FS
 const (
 	ErrorCodeHostUnavailable = "ECHOGO_UNAVAILABLE_001"
 	MessageHostUnavailable   = "echogo.host.unavailable"
+	ErrorCodeTextMissing     = "ECHOGO_VALIDATION_002"
+	MessageTextMissing       = "echogo.text.missing"
 )
 
 // CreateRequest 是 echoes.create 的请求。
@@ -139,8 +141,11 @@ func (s *state) health() plugin.Health {
 	return plugin.Health{State: primitives.Ready, Items: []plugin.HealthItem{{Name: "echo", Status: plugin.Healthy}}}
 }
 
-// create 回声文本并附上下文。
+// create 回声文本并附上下文；文本为空是业务失败，宿主用握手时拿到的目录翻译它。
 func (s *state) create(ctx *invocation.Context, request CreateRequest) primitives.Result[CreateResponse] {
+	if request.Text == "" {
+		return primitives.Fail[CreateResponse](primitives.Validation(ErrorCodeTextMissing, MessageTextMissing, map[string]any{"operation": "echoes.create"}))
+	}
 	s.mu.Lock()
 	greeting := s.greeting
 	s.mu.Unlock()

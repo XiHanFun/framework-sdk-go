@@ -1,5 +1,6 @@
 {
   "echogo.host.unavailable": "The host callback endpoint is not available.",
+  "echogo.text.missing": "The text of {operation} is required.",
   "echogo.configuration.invalid": "The XiHan:Echo configuration is not valid: {reason}.",
   "echoes.create.title": "Echo",
   "echoes.create.description": "Echoes the text together with the greeting, tenant, principal and correlation ID.",
