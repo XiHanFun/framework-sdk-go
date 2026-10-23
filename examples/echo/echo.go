@@ -124,10 +124,8 @@ func Serve(ctx context.Context) error {
 // configure 读配置节 XiHan:Echo 的 greeting。
 func (s *state) configure(_ context.Context, configuration plugin.Configuration) error {
 	var parsed settings
-	if len(configuration.Section) > 0 {
-		if err := json.Unmarshal(configuration.Section, &parsed); err != nil {
-			return primitives.Validation("ECHOGO_VALIDATION_001", "echogo.configuration.invalid", map[string]any{"reason": err.Error()})
-		}
+	if err := configuration.Decode(&parsed); err != nil {
+		return primitives.Validation("ECHOGO_VALIDATION_001", "echogo.configuration.invalid", map[string]any{"reason": err.Error()})
 	}
 	s.mu.Lock()
 	s.greeting = parsed.Greeting

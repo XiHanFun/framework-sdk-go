@@ -5,7 +5,6 @@ package cache
 import (
 	"context"
 	"embed"
-	"encoding/json"
 	"time"
 
 	"github.com/xihanfun/framework-sdk-go/caching"
@@ -72,11 +71,10 @@ type storeHolder struct {
 
 // configure 读配置节 XiHan:Cache 的默认存活时间与容量。
 func (h *storeHolder) configure(_ context.Context, configuration plugin.Configuration) error {
+	// 宿主的配置源是键值字符串，数字以字符串下发：Decode 按字段类型转换
 	var parsed settings
-	if len(configuration.Section) > 0 {
-		if err := json.Unmarshal(configuration.Section, &parsed); err != nil {
-			return primitives.Validation(caching.ErrorCodeInvalidOptions, caching.MessageInvalidOptions, map[string]any{"reason": "XiHan:Cache is not valid JSON: " + err.Error()})
-		}
+	if err := configuration.Decode(&parsed); err != nil {
+		return primitives.Validation(caching.ErrorCodeInvalidOptions, caching.MessageInvalidOptions, map[string]any{"reason": "XiHan:Cache is not valid: " + err.Error()})
 	}
 	var options []caching.MemoryOption
 	if parsed.DefaultTimeToLiveSeconds > 0 {
