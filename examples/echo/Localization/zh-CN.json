@@ -1,0 +1,10 @@
+{
+  "echogo.host.unavailable": "宿主回调端点不可用。",
+  "echogo.configuration.invalid": "XiHan:Echo 配置不合法：{reason}。",
+  "echoes.create.title": "回声",
+  "echoes.create.description": "回声文本，附问候语、租户、主体与关联 ID。",
+  "echoes.relay.title": "转发",
+  "echoes.relay.description": "经宿主调用另一个操作并返回其应答。",
+  "events.list.title": "收到的事件",
+  "events.list.description": "列出投递给插件的事件 ID。"
+}
