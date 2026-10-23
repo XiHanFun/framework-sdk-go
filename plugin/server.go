@@ -38,6 +38,8 @@ type runtime struct {
 	instance      string
 	locale        string
 	hostVersions  []uint32
+	drainOnce     sync.Once
+	draining      chan struct{}
 	stopOnce      sync.Once
 	stopped       chan struct{}
 }
@@ -167,7 +169,8 @@ func (s *service) Stop(ctx context.Context, request *pluginv1.StopRequest) (*plu
 		outcome = StatusFromError(s.r.opts.Hooks.Stop(ctx, request.Reason, grace))
 	}
 	s.r.logger.Info("stopping", "reason", request.Reason, "grace", grace.String())
-	// 应答送出后再优雅停止：GracefulStop 会等本次 RPC 结束
+	// 先让 WatchHealth 等长流结束，再在应答送出后优雅停止：GracefulStop 会等本次 RPC 结束
+	s.r.drainOnce.Do(func() { close(s.r.draining) })
 	go s.r.shutdown(grace)
 	return &pluginv1.StopResponse{Status: ToStatus(outcome)}, nil
 }
@@ -191,7 +194,11 @@ func (s *service) WatchHealth(_ *pluginv1.HealthRequest, stream grpc.ServerStrea
 		select {
 		case <-stream.Context().Done():
 			return nil
-		case <-s.r.stopped:
+		case <-s.r.draining:
+			// 停止时推最后一条 Draining 并结束流：优雅停止要等所有在途 RPC，长流不能拖住它
+			if current := s.r.health(); !reflect.DeepEqual(current, last) {
+				_ = stream.Send(toProtoHealth(current))
+			}
 			return nil
 		case <-changes:
 		case <-ticker.C:
@@ -270,16 +277,13 @@ func (r *runtime) handlerFor(envelope Envelope) (EventHandler, bool) {
 }
 
 // health 计算当前健康：没有回调时按运行时状态；回调报的状态只能是可自报的状态，健康项只保留清单声明的名字；
-// 回调报 Failed / Degraded / Ready 时同步运行时状态。
+// 运行中回调报 Failed / Degraded / Ready 会同步运行时状态，Draining / Stopped / Failed 之后以运行时状态为准。
 func (r *runtime) health() Health {
 	state, err := r.lifecycle.current()
 	if r.opts.Hooks.Health == nil {
 		return Health{State: state, Error: err}
 	}
 	reported := r.opts.Hooks.Health()
-	if !slices.Contains(selfReportedStates, reported.State) {
-		reported.State = state
-	}
 	declared := r.manifest.Health()
 	kept := reported.Items[:0:0]
 	for _, item := range reported.Items {
@@ -290,16 +294,25 @@ func (r *runtime) health() Health {
 		}
 	}
 	reported.Items = kept
-	switch reported.State {
-	case primitives.Failed:
-		r.lifecycle.transition(primitives.Failed, reported.Error)
-	case primitives.Degraded, primitives.Ready:
-		if state == primitives.Ready || state == primitives.Degraded {
+	switch state {
+	case primitives.Draining, primitives.Stopped, primitives.Failed:
+		reported.State = state
+		if reported.Error == nil {
+			reported.Error = err
+		}
+		return reported
+	case primitives.Ready, primitives.Degraded:
+		switch reported.State {
+		case primitives.Failed:
+			r.lifecycle.transition(primitives.Failed, reported.Error)
+		case primitives.Degraded, primitives.Ready:
 			r.lifecycle.transition(reported.State, reported.Error)
 		}
 	}
-	if current, _ := r.lifecycle.current(); current != reported.State && !slices.Contains(selfReportedStates, current) {
-		reported.State = current
+	current, currentErr := r.lifecycle.current()
+	reported.State = current
+	if reported.Error == nil {
+		reported.Error = currentErr
 	}
 	return reported
 }
@@ -307,6 +320,7 @@ func (r *runtime) health() Health {
 // shutdown 优雅停止 gRPC 服务端（宽限内等在途调用），然后标记 Stopped 并让 Serve 返回；只执行一次。
 func (r *runtime) shutdown(grace time.Duration) {
 	r.stopOnce.Do(func() {
+		r.drainOnce.Do(func() { close(r.draining) })
 		done := make(chan struct{})
 		go func() {
 			r.server.GracefulStop()

@@ -88,6 +88,7 @@ func Serve(ctx context.Context, opts Options) error {
 		instance:      opts.Getenv(EnvInstance),
 		locale:        opts.Getenv(EnvLocale),
 		hostVersions:  versions,
+		draining:      make(chan struct{}),
 		stopped:       make(chan struct{}),
 	}
 	if address := opts.Getenv(EnvHostAddress); address != "" {

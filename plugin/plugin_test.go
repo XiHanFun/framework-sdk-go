@@ -221,14 +221,36 @@ func TestServeRunsTheProtocol(t *testing.T) {
 		t.Errorf("undeclared topic %v %v", unknown, err)
 	}
 
-	stopped, err := h.client.Stop(ctx, &pluginv1.StopRequest{GraceSeconds: 2, Reason: "unload"})
+	// 停止时仍打开的 WatchHealth 流必须随 Draining 结束，不能拖住优雅停止
+	openWatch, err := h.client.WatchHealth(ctx, &pluginv1.HealthRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openWatch.Recv(); err != nil {
+		t.Fatal(err)
+	}
+	stopping := time.Now()
+	stopped, err := h.client.Stop(ctx, &pluginv1.StopRequest{GraceSeconds: 5, Reason: "unload"})
 	if err != nil || !stopped.Status.Ok || h.seen.stopReason != "unload" {
 		t.Fatalf("stop %v %v", stopped, err)
+	}
+	for {
+		update, err := openWatch.Recv()
+		if err != nil {
+			break
+		}
+		if update.State == pluginv1.LifecycleState_LIFECYCLE_STATE_DRAINING {
+			continue
+		}
+		t.Errorf("unexpected health update after Stop: %v", update)
 	}
 	select {
 	case err := <-h.done:
 		if err != nil {
 			t.Errorf("serve returned %v", err)
+		}
+		if time.Since(stopping) > 2*time.Second {
+			t.Errorf("Serve took %s to return after Stop; the open stream held the graceful stop", time.Since(stopping))
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Serve must return after Stop")
