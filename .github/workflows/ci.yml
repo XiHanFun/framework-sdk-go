@@ -1,0 +1,55 @@
+name: CI
+
+# Go SDK 的门禁：生成物与规范一致、格式与静态检查、全部测试（含用黑盒运行器跑 echo-go）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: 构建与测试
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: 检出（含规范 submodule）
+        uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: 安装 Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: 安装 buf 与生成器
+        run: |
+          go install github.com/bufbuild/buf/cmd/buf@v1.75.0
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
+
+      - name: 生成物与规范一致
+        shell: bash
+        run: |
+          buf generate
+          git diff --exit-code -- plugin/v1
+
+      - name: 格式与静态检查
+        shell: bash
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+
+      - name: 测试
+        run: go test -race ./...
