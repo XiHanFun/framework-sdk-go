@@ -63,6 +63,7 @@ var (
 	operationPattern    = regexp.MustCompile(`^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$`)
 	sectionPattern      = regexp.MustCompile(`^XiHan:[A-Z][A-Za-z0-9]*(:[A-Z][A-Za-z0-9]*)*$`)
 	healthPattern       = regexp.MustCompile(`^[a-z][a-z0-9.-]*$`)
+	permCodePattern     = regexp.MustCompile(`^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$`)
 )
 
 // IsManifestID 判断清单 ID 是否符合 xihan.<领域>.<名称>。
@@ -180,7 +181,8 @@ type ConfigContribution struct {
 	Schema  string `json:"schema,omitempty"`
 }
 
-// Contributions 是贡献点。
+// Contributions 是贡献点。Permissions 是此包定义的权限码（RFC-0008 权限码文法：小写、点分、至少两段，如 orders.read），
+// 不重复；插件的由宿主在登记它的代理操作时一并登记（plugin/invocation.md §1）。
 type Contributions struct {
 	Pipeline    []PipelineContribution `json:"pipeline,omitempty"`
 	Operations  []string               `json:"operations,omitempty"`
@@ -394,6 +396,18 @@ func (c *Contributions) validate(id string) error {
 	}
 	if c.Config != nil && !sectionPattern.MatchString(c.Config.Section) {
 		return invalid("the configuration section '%s' of '%s' must match XiHan:<Domain> or XiHan:<Domain>:<Section>..., with PascalCase segments", c.Config.Section, id)
+	}
+	// 插件定义的权限码由宿主在登记代理操作时一并登记（plugin/invocation.md §1）：不合文法或重复的码，
+	// 宿主在发现时拒绝整个插件；Go 侧读清单时同样拒绝，不让它等到宿主那里才失败
+	seen := map[string]bool{}
+	for _, code := range c.Permissions {
+		if !permCodePattern.MatchString(code) {
+			return invalid("the permission code '%s' in 'contributes.permissions' of '%s' must be a lowercase dot-separated code with at least two segments, such as 'orders.read'", code, id)
+		}
+		if seen[code] {
+			return invalid("the permission code '%s' appears more than once in 'contributes.permissions' of '%s'", code, id)
+		}
+		seen[code] = true
 	}
 	for _, health := range c.Health {
 		if !healthPattern.MatchString(health) {

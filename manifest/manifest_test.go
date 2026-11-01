@@ -81,6 +81,25 @@ func TestConfigSectionMayHaveSubsections(t *testing.T) {
 	}
 }
 
+func TestContributedPermissionCodesFollowTheHostGrammar(t *testing.T) {
+	const template = `{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"plugin","isolation":"out-of-process","contributes":{"permissions":%s}}`
+	for _, codes := range []string{`[]`, `["orders.read"]`, `["sales.orders.read","sales.orders.write"]`, `["echo2.items-v2.read"]`} {
+		m, err := manifest.Read([]byte(fmt.Sprintf(template, codes)))
+		if err != nil {
+			t.Errorf("%s must be accepted: %v", codes, err)
+			continue
+		}
+		if m.Contributes == nil {
+			t.Errorf("%s read without contributions", codes)
+		}
+	}
+	for _, codes := range []string{`["orders"]`, `["Orders.read"]`, `["orders.Read"]`, `["orders..read"]`, `["orders.read."]`, `[".orders.read"]`, `["1orders.read"]`, `["orders.1read"]`, `["orders_x.read"]`, `["orders:read"]`, `["orders.read","orders.read"]`, `["orders.read","orders.write","orders.read"]`} {
+		if _, err := manifest.Read([]byte(fmt.Sprintf(template, codes))); err == nil {
+			t.Errorf("%s must be rejected", codes)
+		}
+	}
+}
+
 func TestReadRejectsInvalidManifests(t *testing.T) {
 	cases := map[string]string{
 		"unknown field":          `{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"capability","extra":1}`,
