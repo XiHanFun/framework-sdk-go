@@ -61,7 +61,7 @@ var (
 	bindingNamePattern  = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 	bindingTypePattern  = regexp.MustCompile(`^[a-z]+(:[a-z]+)?$`)
 	operationPattern    = regexp.MustCompile(`^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$`)
-	sectionPattern      = regexp.MustCompile(`^XiHan:[A-Z][A-Za-z0-9]*$`)
+	sectionPattern      = regexp.MustCompile(`^XiHan:[A-Z][A-Za-z0-9]*(:[A-Z][A-Za-z0-9]*)*$`)
 	healthPattern       = regexp.MustCompile(`^[a-z][a-z0-9.-]*$`)
 )
 
@@ -174,7 +174,7 @@ type PipelineContribution struct {
 	After      []string                 `json:"after,omitempty"`
 }
 
-// ConfigContribution 是贡献的配置节。
+// ConfigContribution 是贡献的配置节：领域节 XiHan:<领域>，可再带一层或多层 PascalCase 子节（如 XiHan:Caching:Redis，RFC-0002「配置节」）。
 type ConfigContribution struct {
 	Section string `json:"section"`
 	Schema  string `json:"schema,omitempty"`
@@ -393,7 +393,7 @@ func (c *Contributions) validate(id string) error {
 		}
 	}
 	if c.Config != nil && !sectionPattern.MatchString(c.Config.Section) {
-		return invalid("the configuration section '%s' of '%s' must match XiHan:<Domain>", c.Config.Section, id)
+		return invalid("the configuration section '%s' of '%s' must match XiHan:<Domain> or XiHan:<Domain>:<Section>..., with PascalCase segments", c.Config.Section, id)
 	}
 	for _, health := range c.Health {
 		if !healthPattern.MatchString(health) {

@@ -1,6 +1,7 @@
 package manifest_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -57,6 +58,26 @@ func TestReadParsesAPluginManifest(t *testing.T) {
 	}
 	if !strings.Contains(string(written), `"primitives": "1"`) || !strings.Contains(string(written), `"stability": "experimental"`) {
 		t.Errorf("written %s", written)
+	}
+}
+
+// TestConfigSectionMayHaveSubsections 核对配置节文法与宿主一致：领域节后可接任意层 PascalCase 子节（RFC-0002「配置节」）。
+func TestConfigSectionMayHaveSubsections(t *testing.T) {
+	const template = `{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"capability","contributes":{"config":{"section":%q}}}`
+	for _, section := range []string{"XiHan:Caching", "XiHan:Caching:Redis", "XiHan:Protocols:CloudEvents", "XiHan:ObjectStorage:SignedUrls", "XiHan:A:B2:C"} {
+		m, err := manifest.Read([]byte(fmt.Sprintf(template, section)))
+		if err != nil {
+			t.Errorf("%q must be accepted: %v", section, err)
+			continue
+		}
+		if m.ConfigSection() != section {
+			t.Errorf("%q read as %q", section, m.ConfigSection())
+		}
+	}
+	for _, section := range []string{"Orders", "XiHan", "XiHan:", "XiHan:caching", "XiHan:Caching:", "XiHan:Caching::Redis", "XiHan:Caching:redis", "XiHan:Caching:Re-dis", "xihan:Caching", "XiHan:Caching:Redis:"} {
+		if _, err := manifest.Read([]byte(fmt.Sprintf(template, section))); err == nil {
+			t.Errorf("%q must be rejected", section)
+		}
 	}
 }
 
