@@ -301,6 +301,15 @@ func TestServeRejectsBadConfiguration(t *testing.T) {
 	if err := Serve(context.Background(), Options{Manifest: []byte(`{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"capability"}`), Getenv: func(key string) string { return env[key] }, Stdout: io.Discard, Stderr: io.Discard, Stdin: strings.NewReader("")}); err == nil {
 		t.Error("a non-plugin manifest must be rejected")
 	}
+	// 进程外插件不能贡献中间件：读清单即拒绝，不监听、不写握手行
+	withPipeline := strings.Replace(testManifest, `"health": ["echo"] }`, `"health": ["echo"], "pipeline": [{ "middleware": "audit", "stage": "observe" }] }`, 1)
+	var stdout bytes.Buffer
+	if err := Serve(context.Background(), Options{Manifest: []byte(withPipeline), Getenv: func(key string) string { return env[key] }, Stdout: &stdout, Stderr: io.Discard, Stdin: strings.NewReader("")}); err == nil || !strings.Contains(err.Error(), "contributes.pipeline") {
+		t.Errorf("an out-of-process plugin contributing middleware must be rejected, got %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("no handshake line may be written for a rejected manifest: %q", stdout.String())
+	}
 }
 
 func TestNegotiationFollowsTheVectors(t *testing.T) {

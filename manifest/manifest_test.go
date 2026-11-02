@@ -1,6 +1,7 @@
 package manifest_test
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -153,5 +154,48 @@ func TestRequirementsFollowTheVectors(t *testing.T) {
 	}
 	if other, _ := manifest.ParseDeclaration("caching.distributed@1"); requirement.IsSatisfiedBy(other) {
 		t.Error("versions must match")
+	}
+}
+
+// TestOnlyWasmPluginsMayContributeMiddleware 核对与 .NET 宿主同一规则（RFC-0017「范围」）：只有 Wasm 插件能贡献中间件，
+// 进程外与进程内插件的清单写了非空 contributes.pipeline 在读清单时即被拒绝；能力包等非插件照常可以写。
+func TestOnlyWasmPluginsMayContributeMiddleware(t *testing.T) {
+	const template = `{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":%q%s,"contributes":{"pipeline":%s}}`
+	const audit = `[{"middleware":"audit","stage":"observe"},{"middleware":"tenant-guard","stage":"tenant"}]`
+	for _, isolation := range []manifest.Isolation{manifest.IsolationOutOfProcess, manifest.IsolationInProcess} {
+		data := fmt.Sprintf(template, manifest.KindPlugin, fmt.Sprintf(`,"isolation":%q`, isolation), audit)
+		_, err := manifest.Read([]byte(data))
+		var framework *primitives.FrameworkError
+		if !errors.As(err, &framework) || framework.Code != primitives.ErrorCodeInvalidArgument {
+			t.Errorf("a %s plugin contributing middleware must be rejected with %s, got %v", isolation, primitives.ErrorCodeInvalidArgument, err)
+			continue
+		}
+		for _, fragment := range []string{"'xihan.a.b'", "'contributes.pipeline'", "audit, tenant-guard", string(isolation)} {
+			if !strings.Contains(framework.Message, fragment) {
+				t.Errorf("the message for a %s plugin must mention %s: %s", isolation, fragment, framework.Message)
+			}
+		}
+	}
+
+	accepted := map[string]string{
+		"wasm plugin":                fmt.Sprintf(template, manifest.KindPlugin, `,"isolation":"wasm"`, audit),
+		"capability":                 fmt.Sprintf(template, manifest.KindCapability, "", audit),
+		"provider":                   fmt.Sprintf(template, manifest.KindProvider, "", audit),
+		"out-of-process, empty list": fmt.Sprintf(template, manifest.KindPlugin, `,"isolation":"out-of-process"`, `[]`),
+		"in-process, empty list":     fmt.Sprintf(template, manifest.KindPlugin, `,"isolation":"in-process"`, `[]`),
+	}
+	for name, data := range accepted {
+		if _, err := manifest.Read([]byte(data)); err != nil {
+			t.Errorf("%s must be accepted: %v", name, err)
+		}
+	}
+
+	// 写出同样核对：不生成宿主会拒绝的清单
+	written := &manifest.Manifest{
+		ID: "xihan.a.b", Version: "1.0.0", Primitives: 1, Stability: primitives.Stable, Kind: manifest.KindPlugin, Isolation: manifest.IsolationOutOfProcess,
+		Contributes: &manifest.Contributions{Pipeline: []manifest.PipelineContribution{{Middleware: "audit", Stage: primitives.Observe}}},
+	}
+	if _, err := manifest.Write(written); err == nil {
+		t.Error("writing an out-of-process plugin manifest that contributes middleware must fail")
 	}
 }

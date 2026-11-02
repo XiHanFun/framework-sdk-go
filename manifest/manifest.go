@@ -292,7 +292,7 @@ func (m *Manifest) ConfigSection() string {
 	return m.Contributes.Config.Section
 }
 
-// Validate 校验格式与跨字段约束：插件必须声明隔离，非插件不得声明隔离或权限，提供、依赖与绑定不得重复。
+// Validate 校验格式与跨字段约束：插件必须声明隔离，非插件不得声明隔离或权限，只有 Wasm 插件可以贡献中间件，提供、依赖与绑定不得重复。
 func (m *Manifest) Validate() error {
 	if !IsManifestID(m.ID) {
 		return invalid("the manifest ID '%s' must match xihan.<domain>.<name>", m.ID)
@@ -374,6 +374,15 @@ func (m *Manifest) Validate() error {
 	if m.Contributes != nil {
 		if err := m.Contributes.validate(m.ID); err != nil {
 			return err
+		}
+		// 只有 Wasm 插件能贡献中间件（RFC-0017「范围」）：进程外与进程内插件的清单写了 contributes.pipeline，
+		// .NET 宿主在发现或加载时以 PLUGINS_VALIDATION_001 拒绝；Go 侧读清单时同样拒绝，不让作者以为中间件生效了、等到宿主那里才失败
+		if m.Kind == KindPlugin && m.Isolation != IsolationWasm && len(m.Contributes.Pipeline) > 0 {
+			names := make([]string, 0, len(m.Contributes.Pipeline))
+			for _, contribution := range m.Contributes.Pipeline {
+				names = append(names, contribution.Middleware)
+			}
+			return invalid("the plugin '%s' with isolation '%s' must not declare 'contributes.pipeline' (%s): only wasm plugins can contribute middleware", m.ID, m.Isolation, strings.Join(names, ", "))
 		}
 	}
 	return nil
