@@ -6,12 +6,17 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/xihanfun/framework-spec/conformance"
@@ -45,11 +50,12 @@ type echoResponse struct {
 
 // harness 在进程内运行 Serve 并以 gRPC 客户端连上它。
 type harness struct {
-	client pluginv1.PluginClient
-	stdin  *io.PipeWriter
-	done   chan error
-	stderr *bytes.Buffer
-	seen   *recorder
+	client   pluginv1.PluginClient
+	endpoint Endpoint
+	stdin    *io.PipeWriter
+	done     chan error
+	stderr   *bytes.Buffer
+	seen     *recorder
 }
 
 // recorder 记录回调。
@@ -119,12 +125,31 @@ func start(t *testing.T, env map[string]string) *harness {
 	if !ok {
 		t.Fatalf("handshake line %q", line)
 	}
-	conn, err := dial(endpoint)
+	conn, err := dial(endpoint, withSession(env[EnvSession])...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	return &harness{client: pluginv1.NewPluginClient(conn), stdin: stdinWriter, done: done, stderr: stderr, seen: seen}
+	return &harness{client: pluginv1.NewPluginClient(conn), endpoint: endpoint, stdin: stdinWriter, done: done, stderr: stderr, seen: seen}
+}
+
+// withSession 让连接的每次调用都像宿主一样在元数据里带会话令牌；values 为空时不带。
+func withSession(values ...string) []grpc.DialOption {
+	var pairs []string
+	for _, value := range values {
+		pairs = append(pairs, SessionMetadataKey, value)
+	}
+	if len(pairs) == 0 {
+		return nil
+	}
+	return []grpc.DialOption{
+		grpc.WithUnaryInterceptor(func(ctx context.Context, method string, request, reply any, conn *grpc.ClientConn, invoker grpc.UnaryInvoker, options ...grpc.CallOption) error {
+			return invoker(metadata.AppendToOutgoingContext(ctx, pairs...), method, request, reply, conn, options...)
+		}),
+		grpc.WithStreamInterceptor(func(ctx context.Context, description *grpc.StreamDesc, conn *grpc.ClientConn, method string, streamer grpc.Streamer, options ...grpc.CallOption) (grpc.ClientStream, error) {
+			return streamer(metadata.AppendToOutgoingContext(ctx, pairs...), description, conn, method, options...)
+		}),
+	}
 }
 
 func defaultEnv() map[string]string {
@@ -276,11 +301,81 @@ func TestServeStopsWhenStdinCloses(t *testing.T) {
 	}
 }
 
+func TestServeListensInAPrivateSocketDirectory(t *testing.T) {
+	h := start(t, defaultEnv())
+	if h.endpoint.Network != NetworkUnix {
+		t.Fatalf("the default network is unix, got %s", h.endpoint.Network)
+	}
+	// 套接字在临时目录下新建的私有目录里，不直接放在共享的临时目录
+	directory := filepath.Dir(h.endpoint.Address)
+	if filepath.Clean(directory) == filepath.Clean(os.TempDir()) || !strings.HasPrefix(filepath.Base(directory), "xihan-plugin-") {
+		t.Errorf("the socket %q must be in a private directory under the temporary directory", h.endpoint.Address)
+	}
+	info, err := os.Stat(directory)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("the socket directory: %v", err)
+	}
+	if goruntime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+		t.Errorf("the socket directory must be 0700, got %o", info.Mode().Perm())
+	}
+	if _, err := h.client.Handshake(deadline(t), &pluginv1.HandshakeRequest{ProtocolVersions: []uint32{1}, Primitives: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 停止后私有目录随之删除
+	_ = h.stdin.Close()
+	<-h.done
+	if _, err := os.Stat(directory); !os.IsNotExist(err) {
+		t.Errorf("the socket directory must be removed after Serve returns, stat: %v", err)
+	}
+}
+
 func TestServeRefusesWithoutACommonVersion(t *testing.T) {
 	h := start(t, defaultEnv())
 	_, err := h.client.Handshake(deadline(t), &pluginv1.HandshakeRequest{ProtocolVersions: []uint32{99}, Primitives: 1})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Errorf("expected FailedPrecondition, got %v", err)
+	}
+	_ = h.stdin.Close()
+	<-h.done
+}
+
+func TestServeRefusesCallsWithoutTheSessionToken(t *testing.T) {
+	h := start(t, defaultEnv())
+	ctx := deadline(t)
+
+	// 不带、带错、前缀、大小写不同、多带一个错值：一元与流式调用都以 Unauthenticated 拒绝、不执行
+	for _, presented := range [][]string{nil, {""}, {"session-toke"}, {"session-token2"}, {"SESSION-TOKEN"}, {"not-the-token", "session-token"}} {
+		conn, err := dial(h.endpoint, withSession(presented...)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := pluginv1.NewPluginClient(conn)
+		if _, err := client.Handshake(ctx, &pluginv1.HandshakeRequest{ProtocolVersions: []uint32{1}, Primitives: 1}); status.Code(err) != codes.Unauthenticated {
+			t.Errorf("handshake with %q: expected Unauthenticated, got %v", presented, err)
+		}
+		if _, err := client.Invoke(ctx, &pluginv1.InvokeRequest{Operation: "echoes.create", Payload: []byte(`{"text":"x"}`)}); status.Code(err) != codes.Unauthenticated {
+			t.Errorf("invoke with %q: expected Unauthenticated, got %v", presented, err)
+		}
+		if _, err := client.Stop(ctx, &pluginv1.StopRequest{Reason: "intruder"}); status.Code(err) != codes.Unauthenticated {
+			t.Errorf("stop with %q: expected Unauthenticated, got %v", presented, err)
+		}
+		watch, err := client.WatchHealth(ctx, &pluginv1.HealthRequest{})
+		if err == nil {
+			_, err = watch.Recv()
+		}
+		if status.Code(err) != codes.Unauthenticated {
+			t.Errorf("watch-health with %q: expected Unauthenticated, got %v", presented, err)
+		}
+		_ = conn.Close()
+	}
+
+	// 被拒的调用没有执行：带对令牌的握手仍是第一次握手，被拒的 Stop 也没有让插件停下
+	if _, err := h.client.Handshake(ctx, &pluginv1.HandshakeRequest{ProtocolVersions: []uint32{1}, Primitives: 1}); err != nil {
+		t.Fatalf("a handshake with the session token must succeed: %v", err)
+	}
+	if h.seen.stopReason != "" {
+		t.Errorf("a refused Stop must not reach the hook, got reason %q", h.seen.stopReason)
 	}
 	_ = h.stdin.Close()
 	<-h.done

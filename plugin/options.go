@@ -21,7 +21,7 @@ const (
 	ProtocolVersion uint32 = 1
 	// HandshakeLineVersion 是握手行格式版本。
 	HandshakeLineVersion = "xihan-plugin/1"
-	// SessionMetadataKey 是回调宿主时携带会话令牌的元数据键。
+	// SessionMetadataKey 是携带会话令牌的元数据键：宿主调用插件、插件回调宿主的每次 RPC 都带它。
 	SessionMetadataKey = "xihan-plugin-session"
 )
 
@@ -169,7 +169,7 @@ type Options struct {
 	Hooks Hooks
 	// Network 是监听的网络类型；空为 unix（Windows 10 1803 起也支持）。
 	Network Network
-	// Address 是监听地址；空时自动生成（unix 为临时目录里的套接字，tcp 为 127.0.0.1 的随机端口，npipe 为随机管道名）。
+	// Address 是监听地址；空时自动生成（unix 为临时目录下新建的私有目录（0700，停止后删除）里的套接字，tcp 为 127.0.0.1 的随机端口，npipe 为随机管道名）。
 	Address string
 	// Stdin 是宿主保持打开的输入；关闭即退出。空为 os.Stdin。
 	Stdin io.Reader

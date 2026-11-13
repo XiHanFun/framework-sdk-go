@@ -107,11 +107,15 @@ func Serve(ctx context.Context, opts Options) error {
 		r.logger.Warn("the host's primitives version differs from the manifest; the handshake will be rejected by the host", "host", primitivesText, "plugin", int(m.Primitives))
 	}
 
-	listener, endpoint, err := listen(opts.Network, opts.Address)
+	listener, endpoint, cleanup, err := listen(opts.Network, opts.Address)
 	if err != nil {
 		return err
 	}
-	r.server = grpc.NewServer()
+	// 每条返回路径上服务都已停止、监听已关闭，此时才删私有目录
+	defer cleanup()
+	// 每次 RPC（含 Handshake）先核对会话令牌再进入服务实现，令牌不对的调用碰不到生命周期与操作（handshake.md §4）
+	guard := newSessionGuard(session)
+	r.server = grpc.NewServer(grpc.ChainUnaryInterceptor(guard.unary), grpc.ChainStreamInterceptor(guard.stream))
 	pluginv1.RegisterPluginServer(r.server, &service{r: r})
 	serveErrors := make(chan error, 1)
 	go func() { serveErrors <- r.server.Serve(listener) }()
