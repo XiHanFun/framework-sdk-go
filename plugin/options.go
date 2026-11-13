@@ -74,6 +74,14 @@ const (
 	SubscriptionModeBroadcast SubscriptionMode = "broadcast"
 )
 
+// orCompeting 把空的订阅方式当作竞争消费：声明与投递里的空都同 competing。
+func (m SubscriptionMode) orCompeting() SubscriptionMode {
+	if m == "" {
+		return SubscriptionModeCompeting
+	}
+	return m
+}
+
 // Subscription 是一个事件订阅：主题，可选的只投递的 CloudEvents type，以及订阅方式。
 // 同一（Topic，MessageType）对只能声明一次，不能以两种方式各声明一次（handshake.md §3）。
 type Subscription struct {

@@ -83,16 +83,20 @@ func start(t *testing.T, env map[string]string) *harness {
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
 	stderr := &bytes.Buffer{}
-	record := func(_ *invocation.Context, envelope Envelope, _ uint32) primitives.Result[primitives.Unit] {
-		seen.events = append(seen.events, envelope.ID)
-		return primitives.Success()
+	// 每个处理器记下自己的名字与信封 ID，断言能看出投递交给了哪个处理器
+	record := func(name string) EventHandler {
+		return func(_ *invocation.Context, envelope Envelope, _ uint32) primitives.Result[primitives.Unit] {
+			seen.events = append(seen.events, name+":"+envelope.ID)
+			return primitives.Success()
+		}
 	}
 	opts := Options{
 		Manifest:   []byte(testManifest),
 		Operations: registry,
+		// 同一主题：不限类型的竞争订阅，加上只收 probe.cleared 的广播订阅（invocation.md §4 的例子）
 		Subscriptions: []SubscriptionHandler{
-			{Subscription: Subscription{Topic: "probe.events"}, Handler: record},
-			{Subscription: Subscription{Topic: "probe.caches", Mode: SubscriptionModeBroadcast}, Handler: record},
+			{Subscription: Subscription{Topic: "probe.events"}, Handler: record("competing")},
+			{Subscription: Subscription{Topic: "probe.events", MessageType: "probe.cleared", Mode: SubscriptionModeBroadcast}, Handler: record("broadcast")},
 		},
 		Catalogs: []Catalog{{Name: "probe", Locales: map[string]map[string]string{"en-US": {"probe.text.missing": "The text is required."}}}},
 		Hooks: Hooks{
@@ -190,7 +194,7 @@ func TestServeRunsTheProtocol(t *testing.T) {
 	// 订阅方式原样下发：没写方式的留空（宿主按 competing），广播写 broadcast
 	if len(handshake.Subscriptions) != 2 ||
 		handshake.Subscriptions[0].GetTopic() != "probe.events" || handshake.Subscriptions[0].GetMode() != "" ||
-		handshake.Subscriptions[1].GetTopic() != "probe.caches" || handshake.Subscriptions[1].GetMode() != "broadcast" {
+		handshake.Subscriptions[1].GetTopic() != "probe.events" || handshake.Subscriptions[1].GetMessageType() != "probe.cleared" || handshake.Subscriptions[1].GetMode() != "broadcast" {
 		t.Errorf("subscriptions %+v", handshake.Subscriptions)
 	}
 	if _, err := h.client.Handshake(ctx, &pluginv1.HandshakeRequest{ProtocolVersions: []uint32{1}}); status.Code(err) != codes.FailedPrecondition {
@@ -245,15 +249,34 @@ func TestServeRunsTheProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	event, err := h.client.HandleEvent(ctx, &pluginv1.HandleEventRequest{Envelope: &pluginv1.Envelope{Topic: "probe.events", Id: "e1", Type: "probe.created", SpecVersion: "1.0"}, Attempt: 1})
-	if err != nil || !event.Status.Ok || len(h.seen.events) != 1 || h.seen.events[0] != "e1" {
-		t.Errorf("event %v %v %v", event, err, h.seen.events)
+	// 投递按（主题，方式）找处理器再看类型：probe.cleared 以两种方式各到一次，各交给自己方式的处理器；
+	// 空方式同 competing；以广播投递 probe.created 没有匹配的广播订阅，不改交给竞争处理器
+	deliveries := []struct {
+		id, messageType, mode string
+		handled               string
+	}{
+		{"e1", "probe.created", "", "competing:e1"},
+		{"e2", "probe.cleared", "competing", "competing:e2"},
+		{"e3", "probe.cleared", "broadcast", "broadcast:e3"},
+		{"e4", "probe.created", "broadcast", ""},
 	}
-	broadcast, err := h.client.HandleEvent(ctx, &pluginv1.HandleEventRequest{Envelope: &pluginv1.Envelope{Topic: "probe.caches", Id: "e3", Type: "probe.cleared", SpecVersion: "1.0"}, Attempt: 1})
-	if err != nil || !broadcast.Status.Ok || len(h.seen.events) != 2 || h.seen.events[1] != "e3" {
-		t.Errorf("broadcast event %v %v %v", broadcast, err, h.seen.events)
+	for _, delivery := range deliveries {
+		before := len(h.seen.events)
+		event, err := h.client.HandleEvent(ctx, &pluginv1.HandleEventRequest{Envelope: &pluginv1.Envelope{Topic: "probe.events", Id: delivery.id, Type: delivery.messageType, SpecVersion: "1.0"}, Attempt: 1, Mode: delivery.mode})
+		if err != nil {
+			t.Fatalf("event %s: %v", delivery.id, err)
+		}
+		if delivery.handled == "" {
+			if event.Status.Ok || event.Status.Error.Code != operation.ErrorCodeNotFound || len(h.seen.events) != before {
+				t.Errorf("event %s in mode %q must find no handler, got %v %v", delivery.id, delivery.mode, event, h.seen.events)
+			}
+			continue
+		}
+		if !event.Status.Ok || len(h.seen.events) != before+1 || h.seen.events[before] != delivery.handled {
+			t.Errorf("event %s in mode %q must reach %q, got %v %v", delivery.id, delivery.mode, delivery.handled, event, h.seen.events)
+		}
 	}
-	unknown, err := h.client.HandleEvent(ctx, &pluginv1.HandleEventRequest{Envelope: &pluginv1.Envelope{Topic: "other.events", Id: "e2"}, Attempt: 1})
+	unknown, err := h.client.HandleEvent(ctx, &pluginv1.HandleEventRequest{Envelope: &pluginv1.Envelope{Topic: "other.events", Id: "e5"}, Attempt: 1, Mode: "competing"})
 	if err != nil || unknown.Status.Ok || unknown.Status.Error.Code != operation.ErrorCodeNotFound {
 		t.Errorf("undeclared topic %v %v", unknown, err)
 	}

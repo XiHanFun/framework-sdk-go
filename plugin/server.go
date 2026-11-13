@@ -238,9 +238,10 @@ func (s *service) HandleEvent(ctx context.Context, request *pluginv1.HandleEvent
 		return &pluginv1.HandleEventResponse{Status: ToStatus(s.r.unavailable())}, nil
 	}
 	envelope := FromProtoEnvelope(request.Envelope)
-	handler, ok := s.r.handlerFor(envelope)
+	mode := SubscriptionMode(request.GetMode())
+	handler, ok := s.r.handlerFor(envelope, mode)
 	if !ok {
-		return &pluginv1.HandleEventResponse{Status: ToStatus(primitives.Fail[primitives.Unit](primitives.NotFound(operation.ErrorCodeNotFound, operation.MessageNotFound, map[string]any{"topic": envelope.Topic, "type": envelope.Type})))}, nil
+		return &pluginv1.HandleEventResponse{Status: ToStatus(primitives.Fail[primitives.Unit](primitives.NotFound(operation.ErrorCodeNotFound, operation.MessageNotFound, map[string]any{"topic": envelope.Topic, "type": envelope.Type, "mode": string(mode.orCompeting())})))}, nil
 	}
 	invocationCtx := s.r.newContext(ctx, request.Metadata)
 	return &pluginv1.HandleEventResponse{Status: ToStatus(handler(invocationCtx, envelope, request.Attempt))}, nil
@@ -266,10 +267,13 @@ func (r *runtime) newContext(parent context.Context, metadata *pluginv1.Invocati
 	return ctx
 }
 
-// handlerFor 按主题与可选的消息类型找订阅处理器。
-func (r *runtime) handlerFor(envelope Envelope) (EventHandler, bool) {
+// handlerFor 按主题、投递的订阅方式与可选的消息类型找订阅处理器（invocation.md §4）。
+func (r *runtime) handlerFor(envelope Envelope, mode SubscriptionMode) (EventHandler, bool) {
+	// 方式必须相同：同一主题的不同类型可以各用一种方式，一条消息以两种方式各到一次时要交给各自的处理器，不能改交给另一种方式的
+	mode = mode.orCompeting()
 	for _, subscription := range r.subscriptions {
-		if subscription.Subscription.Topic == envelope.Topic && (subscription.Subscription.MessageType == "" || subscription.Subscription.MessageType == envelope.Type) {
+		declared := subscription.Subscription
+		if declared.Topic == envelope.Topic && declared.Mode.orCompeting() == mode && (declared.MessageType == "" || declared.MessageType == envelope.Type) {
 			return subscription.Handler, true
 		}
 	}
