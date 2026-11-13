@@ -63,10 +63,24 @@ const (
 	networkUnset Network = ""
 )
 
-// Subscription 是一个事件订阅：主题，以及可选的只投递的 CloudEvents type。
+// SubscriptionMode 是订阅方式（RFC-0009「订阅方式」）：宿主按它向消息代理订阅主题。
+type SubscriptionMode string
+
+// 订阅方式。
+const (
+	// SubscriptionModeCompeting 是竞争消费：订阅了主题的宿主实例里只有一个把消息交给插件；空同它。
+	SubscriptionModeCompeting SubscriptionMode = "competing"
+	// SubscriptionModeBroadcast 是广播：每个在线的宿主实例都把消息交给自己的插件实例，尽力而为、不进死信、不回放历史。
+	SubscriptionModeBroadcast SubscriptionMode = "broadcast"
+)
+
+// Subscription 是一个事件订阅：主题，可选的只投递的 CloudEvents type，以及订阅方式。
+// 同一（Topic，MessageType）对只能声明一次，不能以两种方式各声明一次（handshake.md §3）。
 type Subscription struct {
 	Topic       string
 	MessageType string
+	// Mode 是订阅方式；空同 SubscriptionModeCompeting。
+	Mode SubscriptionMode
 }
 
 // Envelope 是 CloudEvents 1.0 信封的平铺（RFC-0009）。

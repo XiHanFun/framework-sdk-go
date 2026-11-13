@@ -20,7 +20,7 @@ import (
 )
 
 // Serve 以进程外插件的身份运行：校验清单与声明、读环境变量、监听、写握手行，然后服务到 Stop 完成或 stdin 关闭；
-// 正常停止返回 nil。配置错误（清单不合法、声明的操作不在清单里、环境变量缺失）返回 FrameworkError。
+// 正常停止返回 nil。配置错误（清单不合法、声明的操作不在清单里、订阅的主题或方式不合法或重复、环境变量缺失）返回 FrameworkError。
 func Serve(ctx context.Context, opts Options) error {
 	if opts.Stdin == nil {
 		opts.Stdin = os.Stdin
@@ -53,10 +53,21 @@ func Serve(ctx context.Context, opts Options) error {
 			return configurationError("the operation '%s' is not declared in contributes.operations of '%s'", descriptor.Contract.ID, m.ID)
 		}
 	}
+	// 订阅按（主题，类型）对去重而不看方式：宿主拒绝同一对以两种方式各声明一次（handshake.md §3 第 5 条），在监听前就拒绝
+	declared := make(map[[2]string]bool, len(opts.Subscriptions))
 	for _, subscription := range opts.Subscriptions {
-		if subscription.Handler == nil || !isTopic(subscription.Subscription.Topic) {
-			return configurationError("the subscription '%s' of '%s' needs a valid topic and a handler", subscription.Subscription.Topic, m.ID)
+		declaration := subscription.Subscription
+		if subscription.Handler == nil || !isTopic(declaration.Topic) {
+			return configurationError("the subscription '%s' of '%s' needs a valid topic and a handler", declaration.Topic, m.ID)
 		}
+		if !isSubscriptionMode(declaration.Mode) {
+			return configurationError("the subscription '%s' of '%s' has the mode '%s'; the mode must be empty, '%s' or '%s'", declaration.Topic, m.ID, declaration.Mode, SubscriptionModeCompeting, SubscriptionModeBroadcast)
+		}
+		key := [2]string{declaration.Topic, declaration.MessageType}
+		if declared[key] {
+			return configurationError("the subscription '%s' with the message type '%s' is declared more than once by '%s'", declaration.Topic, declaration.MessageType, m.ID)
+		}
+		declared[key] = true
 	}
 	for _, catalog := range opts.Catalogs {
 		if _, ok := catalog.Locales["en-US"]; !ok {
@@ -179,6 +190,11 @@ func isTopic(topic string) bool {
 		}
 	}
 	return true
+}
+
+// isSubscriptionMode 判断订阅方式是否为空、competing 或 broadcast（RFC-0009「订阅方式」）。
+func isSubscriptionMode(mode SubscriptionMode) bool {
+	return mode == "" || mode == SubscriptionModeCompeting || mode == SubscriptionModeBroadcast
 }
 
 // configurationError 创建配置错误。

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -82,16 +83,17 @@ func start(t *testing.T, env map[string]string) *harness {
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
 	stderr := &bytes.Buffer{}
+	record := func(_ *invocation.Context, envelope Envelope, _ uint32) primitives.Result[primitives.Unit] {
+		seen.events = append(seen.events, envelope.ID)
+		return primitives.Success()
+	}
 	opts := Options{
 		Manifest:   []byte(testManifest),
 		Operations: registry,
-		Subscriptions: []SubscriptionHandler{{
-			Subscription: Subscription{Topic: "probe.events"},
-			Handler: func(_ *invocation.Context, envelope Envelope, _ uint32) primitives.Result[primitives.Unit] {
-				seen.events = append(seen.events, envelope.ID)
-				return primitives.Success()
-			},
-		}},
+		Subscriptions: []SubscriptionHandler{
+			{Subscription: Subscription{Topic: "probe.events"}, Handler: record},
+			{Subscription: Subscription{Topic: "probe.caches", Mode: SubscriptionModeBroadcast}, Handler: record},
+		},
 		Catalogs: []Catalog{{Name: "probe", Locales: map[string]map[string]string{"en-US": {"probe.text.missing": "The text is required."}}}},
 		Hooks: Hooks{
 			Configure: func(_ context.Context, configuration Configuration) error {
@@ -182,8 +184,14 @@ func TestServeRunsTheProtocol(t *testing.T) {
 	if len(handshake.Operations) != 1 || handshake.Operations[0].Id != "echoes.create" || handshake.Operations[0].Stability != "experimental" || handshake.Operations[0].Expose[0] != "http" {
 		t.Errorf("operations %+v", handshake.Operations)
 	}
-	if len(handshake.Subscriptions) != 1 || handshake.Subscriptions[0].Topic != "probe.events" || len(handshake.Catalogs) != 1 || handshake.Catalogs[0].Locales[0].Locale != "en-US" {
-		t.Errorf("subscriptions %+v catalogs %+v", handshake.Subscriptions, handshake.Catalogs)
+	if len(handshake.Catalogs) != 1 || handshake.Catalogs[0].Locales[0].Locale != "en-US" {
+		t.Errorf("catalogs %+v", handshake.Catalogs)
+	}
+	// 订阅方式原样下发：没写方式的留空（宿主按 competing），广播写 broadcast
+	if len(handshake.Subscriptions) != 2 ||
+		handshake.Subscriptions[0].GetTopic() != "probe.events" || handshake.Subscriptions[0].GetMode() != "" ||
+		handshake.Subscriptions[1].GetTopic() != "probe.caches" || handshake.Subscriptions[1].GetMode() != "broadcast" {
+		t.Errorf("subscriptions %+v", handshake.Subscriptions)
 	}
 	if _, err := h.client.Handshake(ctx, &pluginv1.HandshakeRequest{ProtocolVersions: []uint32{1}}); status.Code(err) != codes.FailedPrecondition {
 		t.Errorf("a second handshake must be refused, got %v", err)
@@ -240,6 +248,10 @@ func TestServeRunsTheProtocol(t *testing.T) {
 	event, err := h.client.HandleEvent(ctx, &pluginv1.HandleEventRequest{Envelope: &pluginv1.Envelope{Topic: "probe.events", Id: "e1", Type: "probe.created", SpecVersion: "1.0"}, Attempt: 1})
 	if err != nil || !event.Status.Ok || len(h.seen.events) != 1 || h.seen.events[0] != "e1" {
 		t.Errorf("event %v %v %v", event, err, h.seen.events)
+	}
+	broadcast, err := h.client.HandleEvent(ctx, &pluginv1.HandleEventRequest{Envelope: &pluginv1.Envelope{Topic: "probe.caches", Id: "e3", Type: "probe.cleared", SpecVersion: "1.0"}, Attempt: 1})
+	if err != nil || !broadcast.Status.Ok || len(h.seen.events) != 2 || h.seen.events[1] != "e3" {
+		t.Errorf("broadcast event %v %v %v", broadcast, err, h.seen.events)
 	}
 	unknown, err := h.client.HandleEvent(ctx, &pluginv1.HandleEventRequest{Envelope: &pluginv1.Envelope{Topic: "other.events", Id: "e2"}, Attempt: 1})
 	if err != nil || unknown.Status.Ok || unknown.Status.Error.Code != operation.ErrorCodeNotFound {
@@ -404,6 +416,61 @@ func TestServeRejectsBadConfiguration(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Errorf("no handshake line may be written for a rejected manifest: %q", stdout.String())
+	}
+}
+
+func TestServeRejectsBadSubscriptions(t *testing.T) {
+	handler := func(*invocation.Context, Envelope, uint32) primitives.Result[primitives.Unit] {
+		return primitives.Success()
+	}
+	subscribe := func(subscriptions ...Subscription) []SubscriptionHandler {
+		handlers := make([]SubscriptionHandler, 0, len(subscriptions))
+		for _, subscription := range subscriptions {
+			handlers = append(handlers, SubscriptionHandler{Subscription: subscription, Handler: handler})
+		}
+		return handlers
+	}
+	// 不带会话令牌：订阅校验在读环境变量之前，合法的订阅走到缺令牌这一步才失败，借此区分是哪一条拒绝的
+	env := defaultEnv()
+	delete(env, EnvSession)
+	serve := func(subscriptions []SubscriptionHandler) (string, error) {
+		var stdout bytes.Buffer
+		err := Serve(context.Background(), Options{Manifest: []byte(testManifest), Subscriptions: subscriptions, Getenv: func(key string) string { return env[key] }, Stdout: &stdout, Stderr: io.Discard, Stdin: strings.NewReader("")})
+		return stdout.String(), err
+	}
+
+	rejected := []struct {
+		name          string
+		subscriptions []SubscriptionHandler
+		message       string
+	}{
+		{"unknown mode", subscribe(Subscription{Topic: "probe.events", Mode: "fanout"}), "the mode 'fanout'"},
+		{"mode in another case", subscribe(Subscription{Topic: "probe.events", Mode: "Broadcast"}), "the mode 'Broadcast'"},
+		{"same pair twice", subscribe(Subscription{Topic: "probe.events"}, Subscription{Topic: "probe.events"}), "declared more than once"},
+		{"empty and competing are the same mode", subscribe(Subscription{Topic: "probe.events"}, Subscription{Topic: "probe.events", Mode: SubscriptionModeCompeting}), "declared more than once"},
+		{"one pair in both modes", subscribe(Subscription{Topic: "probe.events", MessageType: "probe.created", Mode: SubscriptionModeCompeting}, Subscription{Topic: "probe.events", MessageType: "probe.created", Mode: SubscriptionModeBroadcast}), "declared more than once"},
+	}
+	for _, test := range rejected {
+		t.Run(test.name, func(t *testing.T) {
+			stdout, err := serve(test.subscriptions)
+			var framework *primitives.FrameworkError
+			if !errors.As(err, &framework) || framework.Code != primitives.ErrorCodeInvalidArgument || !strings.Contains(err.Error(), test.message) {
+				t.Errorf("expected an invalid-argument FrameworkError containing %q, got %v", test.message, err)
+			}
+			if stdout != "" {
+				t.Errorf("no handshake line may be written for rejected subscriptions: %q", stdout)
+			}
+		})
+	}
+
+	// 同一主题的不同类型是不同的对，可以各用一种方式
+	accepted := subscribe(
+		Subscription{Topic: "probe.events", MessageType: "probe.created"},
+		Subscription{Topic: "probe.events", MessageType: "probe.cleared", Mode: SubscriptionModeBroadcast},
+		Subscription{Topic: "probe.events", Mode: SubscriptionModeCompeting},
+	)
+	if _, err := serve(accepted); err == nil || !strings.Contains(err.Error(), EnvSession) {
+		t.Errorf("distinct (topic, type) pairs must pass the subscription checks, got %v", err)
 	}
 }
 

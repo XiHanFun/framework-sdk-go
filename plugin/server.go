@@ -93,7 +93,7 @@ func (s *service) Handshake(_ context.Context, request *pluginv1.HandshakeReques
 		response.Operations = append(response.Operations, declaration)
 	}
 	for _, subscription := range s.r.subscriptions {
-		response.Subscriptions = append(response.Subscriptions, &pluginv1.Subscription{Topic: subscription.Subscription.Topic, MessageType: subscription.Subscription.MessageType})
+		response.Subscriptions = append(response.Subscriptions, &pluginv1.Subscription{Topic: subscription.Subscription.Topic, MessageType: subscription.Subscription.MessageType, Mode: string(subscription.Subscription.Mode)})
 	}
 	for _, catalog := range s.r.opts.Catalogs {
 		encoded := &pluginv1.MessageCatalog{Name: catalog.Name}
