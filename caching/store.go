@@ -1,5 +1,5 @@
 // Package caching 是 caching.distributed@1 远程 Provider 的插件侧（RFC-0019，spec/provider/caching-distributed.md）：
-// Store 是 RFC-0006 的五个原子存储操作加三个批量操作（conventions/batch-first.md），MemoryStore 是有界的进程内实现，
+// Store 是 RFC-0006 的六个原子存储操作加三个批量操作（conventions/batch-first.md），MemoryStore 是有界的进程内实现，
 // RegisterOperations 把任何 Store 暴露成操作集，让 .NET 宿主的 Caching.Remote 适配器把这个插件当作分布式缓存 Provider。
 package caching
 
@@ -21,13 +21,14 @@ const (
 	OperationTryAdd     = "cache-entries.try-add"
 	OperationRemove     = "cache-entries.remove"
 	OperationTryRemove  = "cache-entries.try-remove"
+	OperationTryRefresh = "cache-entries.try-refresh"
 	OperationGetMany    = "cache-entries.get-many"
 	OperationSetMany    = "cache-entries.set-many"
 	OperationRemoveMany = "cache-entries.remove-many"
 )
 
 // Operations 是操作集的全部操作，按规范顺序。
-var Operations = []string{OperationGet, OperationSet, OperationTryAdd, OperationRemove, OperationTryRemove, OperationGetMany, OperationSetMany, OperationRemoveMany}
+var Operations = []string{OperationGet, OperationSet, OperationTryAdd, OperationRemove, OperationTryRemove, OperationTryRefresh, OperationGetMany, OperationSetMany, OperationRemoveMany}
 
 // 缓存子系统的错误码（conventions/error-codes.md）。
 const (
@@ -94,6 +95,14 @@ func IsKey(key string) bool {
 	return true
 }
 
+// ValidateRefresh 校验 TryRefresh 的存活时间：必须为正，否则返回 CACHING_VALIDATION_002。
+func ValidateRefresh(ttl time.Duration) *primitives.Error {
+	if ttl <= 0 {
+		return primitives.Validation(ErrorCodeInvalidOptions, MessageInvalidOptions, map[string]any{"reason": "the refresh ttl must be positive"})
+	}
+	return nil
+}
+
 // ValidateKey 校验键；不合法返回 CACHING_VALIDATION_001。
 func ValidateKey(key string) *primitives.Error {
 	if !IsKey(key) {
@@ -125,6 +134,9 @@ type Store interface {
 	Remove(ctx context.Context, key string) (bool, error)
 	// TryRemove 当前值等于期望值时才删除；删除返回真。原子。
 	TryRemove(ctx context.Context, key string, expected []byte) (bool, error)
+	// TryRefresh 当前值等于期望值时把到期时间重设为现在加 ttl（必须为正）；重设返回真，不存在、已过期或值不同返回假。
+	// 原子、不改值；滑动过期的条目只重设这一次的到期时间，滑动窗口不变。分布式锁的续约用它（ADR-0215）。
+	TryRefresh(ctx context.Context, key string, expected []byte, ttl time.Duration) (bool, error)
 	// GetMany 逐键同 Get，一次完成；命中的滑动过期条目逐个延长。
 	GetMany(ctx context.Context, keys []string) ([]Lookup, error)
 	// SetMany 逐项同 Set，一次完成；同一键出现多次后者覆盖。任一项不合法或容量不足时整批不写。

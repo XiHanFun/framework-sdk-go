@@ -52,6 +52,7 @@ func TestCachePassesTheConformanceSuite(t *testing.T) {
 		"--config", `{"defaultTimeToLiveSeconds":60,"maxEntries":1000}`,
 		"--sample", `cache-entries.set={"key":"k","value":"aGk="}`,
 		"--sample", `cache-entries.try-add={"key":"lock","value":"dA=="}`,
+		"--sample", `cache-entries.try-refresh={"key":"lock","expected":"dA==","ttlMs":30000}`,
 		"--sample", `cache-entries.try-remove={"key":"lock","expected":"dA=="}`,
 		"--sample", `cache-entries.get={"key":"k"}`,
 		"--sample", `cache-entries.remove={"key":"k"}`)

@@ -151,6 +151,27 @@ func (s *MemoryStore) TryRemove(_ context.Context, key string, expected []byte) 
 	return true, nil
 }
 
+// TryRefresh 实现 Store。
+func (s *MemoryStore) TryRefresh(_ context.Context, key string, expected []byte, ttl time.Duration) (bool, error) {
+	if err := ValidateKey(key); err != nil {
+		return false, err
+	}
+	if err := ValidateRefresh(ttl); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	// 比较与重设在同一把锁里：锁的续约不能续到别人在两步之间写入的新值上；已过期的条目不复活
+	e := s.live(key, now)
+	if e == nil || !bytes.Equal(e.value, expected) {
+		return false, nil
+	}
+	// 只重设这一次的到期时间，sliding 不动：之后的读取照旧按原滑动窗口延长
+	e.expires = now.Add(ttl)
+	return true, nil
+}
+
 // GetMany 实现 Store：全部键先校验，再一次加锁逐键读取。
 func (s *MemoryStore) GetMany(_ context.Context, keys []string) ([]Lookup, error) {
 	if err := ValidateKeys(keys); err != nil {

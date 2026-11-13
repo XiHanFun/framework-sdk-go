@@ -112,6 +112,11 @@ func (h *storeHolder) TryRemove(ctx context.Context, key string, expected []byte
 	return h.store.TryRemove(ctx, key, expected)
 }
 
+// TryRefresh 实现 caching.Store。
+func (h *storeHolder) TryRefresh(ctx context.Context, key string, expected []byte, ttl time.Duration) (bool, error) {
+	return h.store.TryRefresh(ctx, key, expected, ttl)
+}
+
 // GetMany 实现 caching.Store。
 func (h *storeHolder) GetMany(ctx context.Context, keys []string) ([]caching.Lookup, error) {
 	return h.store.GetMany(ctx, keys)

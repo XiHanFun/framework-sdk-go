@@ -53,6 +53,18 @@ type TryRemoveRequest struct {
 	Expected string `json:"expected"`
 }
 
+// TryRefreshRequest 是 cache-entries.try-refresh 的请求；ttlMs 必填，用指针区分"没给"与"给了 0"。
+type TryRefreshRequest struct {
+	Key      string `json:"key"`
+	Expected string `json:"expected"`
+	TTLMs    *int64 `json:"ttlMs,omitempty"`
+}
+
+// RefreshedResponse 是 cache-entries.try-refresh 的响应。
+type RefreshedResponse struct {
+	Refreshed bool `json:"refreshed"`
+}
+
 // KeysRequest 是 cache-entries.get-many 与 cache-entries.remove-many 的请求。
 type KeysRequest struct {
 	Keys []string `json:"keys"`
@@ -73,7 +85,7 @@ type RemovedManyResponse struct {
 	Removed []bool `json:"removed"`
 }
 
-// RegisterOperations 把 Store 暴露成操作集：八个 internal、不对外发布的操作。
+// RegisterOperations 把 Store 暴露成操作集：九个 internal、不对外发布的操作。
 func RegisterOperations(registry *operation.Registry, store Store) error {
 	adapter := &operations{store: store}
 	if err := operation.Add(registry, contract(OperationGet), operation.HandlerFunc[GetRequest, GetResponse](adapter.get), nil, ""); err != nil {
@@ -89,6 +101,9 @@ func RegisterOperations(registry *operation.Registry, store Store) error {
 		return err
 	}
 	if err := operation.Add(registry, contract(OperationTryRemove), operation.HandlerFunc[TryRemoveRequest, RemovedResponse](adapter.tryRemove), nil, ""); err != nil {
+		return err
+	}
+	if err := operation.Add(registry, contract(OperationTryRefresh), operation.HandlerFunc[TryRefreshRequest, RefreshedResponse](adapter.tryRefresh), nil, ""); err != nil {
 		return err
 	}
 	if err := operation.Add(registry, contract(OperationGetMany), operation.HandlerFunc[KeysRequest, GetManyResponse](adapter.getMany), nil, ""); err != nil {
@@ -168,6 +183,25 @@ func (o *operations) tryRemove(ctx *invocation.Context, request TryRemoveRequest
 		return primitives.Fail[RemovedResponse](storeError(storeErr))
 	}
 	return primitives.Ok(RemovedResponse{Removed: removed})
+}
+
+// tryRefresh 实现 cache-entries.try-refresh：先按子系统规则校验键与必填的 ttlMs，再解码期望值。
+func (o *operations) tryRefresh(ctx *invocation.Context, request TryRefreshRequest) primitives.Result[RefreshedResponse] {
+	if err := ValidateKey(request.Key); err != nil {
+		return primitives.Fail[RefreshedResponse](err)
+	}
+	if request.TTLMs == nil || *request.TTLMs <= 0 {
+		return primitives.Fail[RefreshedResponse](primitives.Validation(ErrorCodeInvalidOptions, MessageInvalidOptions, map[string]any{"reason": "ttlMs is required and must be a positive integer"}))
+	}
+	expected, err := decodeValue(request.Expected)
+	if err != nil {
+		return primitives.Fail[RefreshedResponse](err)
+	}
+	refreshed, storeErr := o.store.TryRefresh(ctx, request.Key, expected, time.Duration(*request.TTLMs)*time.Millisecond)
+	if storeErr != nil {
+		return primitives.Fail[RefreshedResponse](storeError(storeErr))
+	}
+	return primitives.Ok(RefreshedResponse{Refreshed: refreshed})
 }
 
 // getMany 实现 cache-entries.get-many：空数组不触后端，响应数组与 keys 等长（空时是 []，不是 null）。

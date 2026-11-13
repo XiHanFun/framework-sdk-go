@@ -124,6 +124,81 @@ func TestMemoryStoreAtomicOperations(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreTryRefreshRenewsOnlyTheMatchingValue(t *testing.T) {
+	store, clock := newStore(t)
+	ctx := context.Background()
+	if err := store.Set(ctx, "lock", []byte("token"), caching.Options{TimeToLive: 10 * time.Second}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 值不同、键不存在都不重设
+	clock.Advance(8 * time.Second)
+	if refreshed, err := store.TryRefresh(ctx, "lock", []byte("other"), 10*time.Second); err != nil || refreshed {
+		t.Fatalf("a different value must not refresh: %v %v", refreshed, err)
+	}
+	if refreshed, err := store.TryRefresh(ctx, "missing", []byte("token"), 10*time.Second); err != nil || refreshed {
+		t.Fatalf("a missing key must not refresh: %v %v", refreshed, err)
+	}
+
+	// 值相同时到期时间重设为现在 + ttl，值不变：原定 10 秒到期，续约后 16 秒仍在、18 秒过期
+	if refreshed, err := store.TryRefresh(ctx, "lock", []byte("token"), 10*time.Second); err != nil || !refreshed {
+		t.Fatalf("the matching value must refresh: %v %v", refreshed, err)
+	}
+	clock.Advance(8 * time.Second)
+	if value, found, _ := store.Get(ctx, "lock"); !found || string(value) != "token" {
+		t.Fatalf("a refreshed entry outlives its original expiry with its value unchanged: %q %v", value, found)
+	}
+	clock.Advance(2 * time.Second)
+	if _, found, _ := store.Get(ctx, "lock"); found {
+		t.Fatal("a refreshed entry expires at now + ttl of the refresh")
+	}
+
+	// 已过期视为不存在：不重设、不复活，键可以被别人拿走，原持有者续约不回来
+	if refreshed, _ := store.TryRefresh(ctx, "lock", []byte("token"), time.Minute); refreshed {
+		t.Fatal("an expired entry must not be refreshed")
+	}
+	if added, _ := store.TryAdd(ctx, "lock", []byte("successor"), caching.Options{TimeToLive: time.Minute}); !added {
+		t.Fatal("the key is free after expiry")
+	}
+	if refreshed, _ := store.TryRefresh(ctx, "lock", []byte("token"), time.Minute); refreshed {
+		t.Fatal("the previous holder must not refresh the successor's entry")
+	}
+}
+
+func TestMemoryStoreTryRefreshKeepsTheSlidingWindow(t *testing.T) {
+	store, clock := newStore(t)
+	ctx := context.Background()
+	if err := store.Set(ctx, "s", []byte("v"), caching.Options{Sliding: 10 * time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	if refreshed, err := store.TryRefresh(ctx, "s", []byte("v"), 30*time.Second); err != nil || !refreshed {
+		t.Fatalf("refresh: %v %v", refreshed, err)
+	}
+	// 这一次的到期是现在 + 30 秒，超过滑动窗口也还在
+	clock.Advance(25 * time.Second)
+	if _, found, _ := store.Get(ctx, "s"); !found {
+		t.Fatal("the refreshed expiry applies once, beyond the sliding window")
+	}
+	// 读取照旧按原来的 10 秒窗口延长，续约没有改窗口
+	clock.Advance(11 * time.Second)
+	if _, found, _ := store.Get(ctx, "s"); found {
+		t.Fatal("after a read the sliding window is still 10 seconds")
+	}
+}
+
+func TestMemoryStoreTryRefreshValidates(t *testing.T) {
+	store, _ := newStore(t)
+	ctx := context.Background()
+	for _, ttl := range []time.Duration{0, -time.Second} {
+		if _, err := store.TryRefresh(ctx, "k", nil, ttl); err == nil || err.(*primitives.Error).Code != caching.ErrorCodeInvalidOptions {
+			t.Errorf("ttl %s: %v", ttl, err)
+		}
+	}
+	if _, err := store.TryRefresh(ctx, "has space", nil, time.Second); err == nil || err.(*primitives.Error).Code != caching.ErrorCodeInvalidKey {
+		t.Errorf("invalid key: %v", err)
+	}
+}
+
 func TestMemoryStoreValidatesAndBoundsCapacity(t *testing.T) {
 	store, clock := newStore(t, caching.WithCapacity(2))
 	ctx := context.Background()
@@ -198,6 +273,22 @@ func TestOperationsReplayTheVectors(t *testing.T) {
 	bad := invoker.Invoke(invocation.Background(), operation.Request{ID: caching.OperationSet, Payload: []byte(`{"key":"k","value":"%%%"}`)})
 	if bad.Outcome.OK() || bad.Outcome.Err().Code != operation.ErrorCodeInvalidPayload {
 		t.Errorf("bad base64: %v", bad.Outcome)
+	}
+
+	// try-refresh 的 ttlMs 必填且为正；键先于选项、选项先于期望值校验
+	refreshFailures := map[string]string{
+		`{"key":"k","expected":""}`:                vectors.Errors["invalidOptions"],
+		`{"key":"k","expected":"","ttlMs":0}`:      vectors.Errors["invalidOptions"],
+		`{"key":"k","expected":"","ttlMs":-1}`:     vectors.Errors["invalidOptions"],
+		`{"key":"has space","expected":"%%%"}`:     vectors.Errors["invalidKey"],
+		`{"key":"k","expected":"%%%"}`:             vectors.Errors["invalidOptions"],
+		`{"key":"k","expected":"%%%","ttlMs":100}`: operation.ErrorCodeInvalidPayload,
+	}
+	for payload, code := range refreshFailures {
+		response := invoker.Invoke(invocation.Background(), operation.Request{ID: caching.OperationTryRefresh, Payload: []byte(payload)})
+		if response.Outcome.OK() || response.Outcome.Err().Code != code {
+			t.Errorf("try-refresh %s: got %v, want %s", payload, response.Outcome, code)
+		}
 	}
 }
 
