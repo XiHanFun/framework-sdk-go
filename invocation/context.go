@@ -54,9 +54,11 @@ type Context struct {
 	expiry   *deadlineToken
 	traceID  string
 	spanID   string
-	sampled  bool
-	baggage  map[string]string
-	items    *items
+	// traceFlags 是上游给的 W3C trace-flags；hasTraceFlags 为假时没有上游，这次调用是链路的根（RFC-0003 规则 7）
+	traceFlags    byte
+	hasTraceFlags bool
+	baggage       map[string]string
+	items         *items
 }
 
 // deadlineToken 是截止令牌（RFC-0004、ADR-0092）：到达截止时间时由定时器置位，调用方的取消不停它。
@@ -84,19 +86,21 @@ func WithTimeout(timeout time.Duration) Option {
 	return func(c *Context) { c.deadline = time.Now().UTC().Add(timeout) }
 }
 
-// WithTrace 设置追踪 ID（32 位小写十六进制）与 Span ID（16 位小写十六进制）。
+// WithTrace 设置追踪 ID（32 位小写十六进制）与 Span ID（16 位小写十六进制）；只给 ID 不给标志按上游已采样处理，
+// 标志为 01（RFC-0003 规则 7）
 func WithTrace(traceID, spanID string) Option {
 	return func(c *Context) {
 		c.traceID = traceID
 		c.spanID = spanID
+		c.traceFlags, c.hasTraceFlags = SampledFlag, true
 	}
 }
 
-// WithTraceParent 从 W3C traceparent 设置追踪；不合法时忽略。
+// WithTraceParent 从 W3C traceparent 设置追踪 ID、Span ID 与标志；上游「不采样」（00）原样保留，不合法时忽略
 func WithTraceParent(traceParent string) Option {
 	return func(c *Context) {
-		if traceID, spanID, sampled, ok := ParseTraceParent(traceParent); ok {
-			c.traceID, c.spanID, c.sampled = traceID, spanID, sampled
+		if traceID, spanID, flags, ok := parseTraceParent(traceParent); ok {
+			c.traceID, c.spanID, c.traceFlags, c.hasTraceFlags = traceID, spanID, flags, true
 		}
 	}
 }
@@ -116,7 +120,7 @@ func New(parent context.Context, options ...Option) *Context {
 	if parent == nil {
 		parent = context.Background()
 	}
-	c := &Context{Context: parent, baggage: map[string]string{}, items: &items{values: map[any]any{}}, sampled: true}
+	c := &Context{Context: parent, baggage: map[string]string{}, items: &items{values: map[any]any{}}}
 	for _, option := range options {
 		option(c)
 	}
@@ -179,13 +183,16 @@ func (c *Context) TraceID() string { return c.traceID }
 // SpanID 返回 Span ID。
 func (c *Context) SpanID() string { return c.spanID }
 
-// TraceParent 返回 W3C traceparent。
+// TraceFlags 返回上游给的 W3C trace-flags；没有上游（链路的根）时第二个返回值为假（RFC-0003 规则 7）
+func (c *Context) TraceFlags() (byte, bool) { return c.traceFlags, c.hasTraceFlags }
+
+// TraceParent 返回 W3C traceparent：标志写采样决定，上游给的标志原样写出（含 00）；没有上游时 SDK 没有采样器，写 01
 func (c *Context) TraceParent() string {
-	flags := "00"
-	if c.sampled {
-		flags = "01"
+	flags := SampledFlag
+	if c.hasTraceFlags {
+		flags = c.traceFlags
 	}
-	return "00-" + c.traceID + "-" + c.spanID + "-" + flags
+	return "00-" + c.traceID + "-" + c.spanID + "-" + hex.EncodeToString([]byte{flags})
 }
 
 // Baggage 返回 Baggage 的副本。
@@ -291,13 +298,29 @@ func FromContextError(err error) *primitives.Error {
 	}
 }
 
-// ParseTraceParent 解析 W3C traceparent，返回追踪 ID、Span ID 与采样标志。
+// SampledFlag 是 W3C trace-flags 的采样位
+const SampledFlag byte = 0x01
+
+// IsSampled 判断 trace-flags 是否采样：只看最低位（W3C trace-flags 是位域，03 也是采样）
+func IsSampled(flags byte) bool { return flags&SampledFlag != 0 }
+
+// ParseTraceParent 解析 W3C traceparent，返回追踪 ID、Span ID 与是否采样（只看标志的最低位）
 func ParseTraceParent(traceParent string) (traceID, spanID string, sampled, ok bool) {
+	traceID, spanID, flags, ok := parseTraceParent(traceParent)
+	return traceID, spanID, ok && IsSampled(flags), ok
+}
+
+// parseTraceParent 解析 W3C traceparent，返回追踪 ID、Span ID 与原样的 trace-flags
+func parseTraceParent(traceParent string) (traceID, spanID string, flags byte, ok bool) {
 	match := traceParentPattern.FindStringSubmatch(traceParent)
 	if match == nil || match[2] == "00000000000000000000000000000000" || match[3] == "0000000000000000" {
-		return "", "", false, false
+		return "", "", 0, false
 	}
-	return match[2], match[3], match[4] == "01", true
+	decoded, err := hex.DecodeString(match[4])
+	if err != nil {
+		return "", "", 0, false
+	}
+	return match[2], match[3], decoded[0], true
 }
 
 // NewTraceID 生成 32 位小写十六进制的追踪 ID。

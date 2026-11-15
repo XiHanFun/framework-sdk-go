@@ -2,6 +2,7 @@ package invocation_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,6 +77,42 @@ func TestTraceParentParsing(t *testing.T) {
 	ctx := invocation.Background(invocation.WithTraceParent("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00"))
 	if ctx.TraceID() != "0af7651916cd43dd8448eb211c80319c" || ctx.TraceParent() != "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00" {
 		t.Errorf("traceparent %s", ctx.TraceParent())
+	}
+}
+
+// TestTraceFlagsFollowRFC0003 核对 RFC-0003 规则 7：没有上游时标志为空（根调用），写出时写 01；上游的标志原样保留，
+// 采样只看最低位；只给 ID 不给标志按已采样处理
+func TestTraceFlagsFollowRFC0003(t *testing.T) {
+	root := invocation.Background()
+	if _, ok := root.TraceFlags(); ok {
+		t.Error("a root invocation has no trace flags")
+	}
+	if !strings.HasSuffix(root.TraceParent(), "-01") {
+		t.Errorf("without a sampler the root writes 01: %s", root.TraceParent())
+	}
+	ignored := invocation.Background(invocation.WithTraceParent("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331"))
+	if _, ok := ignored.TraceFlags(); ok || ignored.TraceID() == "0af7651916cd43dd8448eb211c80319c" {
+		t.Error("an invalid traceparent is ignored and the invocation is a root")
+	}
+
+	const prefix = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-"
+	for flags, sampled := range map[string]bool{"00": false, "01": true, "02": false, "03": true, "ff": true, "fe": false} {
+		ctx := invocation.Background(invocation.WithTraceParent(prefix + flags))
+		got, ok := ctx.TraceFlags()
+		if !ok || ctx.TraceParent() != prefix+flags || invocation.IsSampled(got) != sampled {
+			t.Errorf("flags %s: %02x %v, traceparent %s", flags, got, ok, ctx.TraceParent())
+		}
+		if _, _, parsed, ok := invocation.ParseTraceParent(prefix + flags); !ok || parsed != sampled {
+			t.Errorf("flags %s parse as sampled=%v", flags, parsed)
+		}
+	}
+
+	explicit := invocation.Background(invocation.WithTrace("0af7651916cd43dd8448eb211c80319c", "b7ad6b7169203331"))
+	if flags, ok := explicit.TraceFlags(); !ok || flags != invocation.SampledFlag || explicit.TraceParent() != prefix+"01" {
+		t.Errorf("ids without flags count as sampled: %02x %v %s", flags, ok, explicit.TraceParent())
+	}
+	if derived := invocation.Background(invocation.WithTraceParent(prefix+"00")).WithBaggage("xihan.feature-flag", "on"); derived.TraceParent() != prefix+"00" {
+		t.Errorf("derived contexts keep the flags: %s", derived.TraceParent())
 	}
 }
 
