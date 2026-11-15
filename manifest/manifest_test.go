@@ -199,3 +199,64 @@ func TestOnlyWasmPluginsMayContributeMiddleware(t *testing.T) {
 		t.Error("writing an out-of-process plugin manifest that contributes middleware must fail")
 	}
 }
+
+// TestReadFollowsTheSchemaStrictly 核对按 Schema 严格读取：成员名区分大小写，拒绝 null，接口版本只能是数字字符串、
+// 只有 requires[].version 可以带 ^，必填成员不能缺，JSON 之后不能有多余内容
+func TestReadFollowsTheSchemaStrictly(t *testing.T) {
+	const base = `"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"capability"`
+	accepted := map[string]string{
+		"requires with ^":       `{` + base + `,"requires":[{"id":"a.b","version":"^2"}]}`,
+		"requires without ^":    `{` + base + `,"requires":[{"id":"a.b","version":"2","optional":true}]}`,
+		"provides":              `{` + base + `,"provides":[{"id":"a.b","version":"3"}]}`,
+		"trailing whitespace":   `{` + base + "}\n\t ",
+		"hyphenated operations": `{` + base + `,"contributes":{"operations":["order-lines.list","a1-b2.c3-d4"]}}`,
+	}
+	for name, data := range accepted {
+		if _, err := manifest.Read([]byte(data)); err != nil {
+			t.Errorf("%s must be accepted: %v", name, err)
+		}
+	}
+	m, _ := manifest.Read([]byte(accepted["requires with ^"]))
+	if m == nil || m.Requires[0].Version != 2 {
+		t.Errorf("^2 reads as 2: %+v", m)
+	}
+
+	rejected := map[string]string{
+		"ID in another case":          `{"ID":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"capability"}`,
+		"Kind in another case":        `{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","Kind":"capability"}`,
+		"nested member in other case": `{` + base + `,"contributes":{"Operations":["a.b"]}}`,
+		"requirement member case":     `{` + base + `,"requires":[{"id":"a.b","Version":"1"}]}`,
+		"null package":                `{` + base + `,"package":null}`,
+		"null provides":               `{` + base + `,"provides":null}`,
+		"null contributes":            `{` + base + `,"contributes":null}`,
+		"null array item":             `{` + base + `,"requires":[null]}`,
+		"null optional":               `{` + base + `,"requires":[{"id":"a.b","version":"1","optional":null}]}`,
+		"null binding required":       `{` + base + `,"bindings":[{"name":"db","type":"queue","required":null}]}`,
+		"null stability":              `{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":null,"kind":"capability"}`,
+		"primitives with ^":           `{"id":"xihan.a.b","version":"1.0.0","primitives":"^1","stability":"stable","kind":"capability"}`,
+		"primitives as a number":      `{"id":"xihan.a.b","version":"1.0.0","primitives":1,"stability":"stable","kind":"capability"}`,
+		"primitives with a zero":      `{"id":"xihan.a.b","version":"1.0.0","primitives":"01","stability":"stable","kind":"capability"}`,
+		"primitives out of range":     `{"id":"xihan.a.b","version":"1.0.0","primitives":"99999999999999999999","stability":"stable","kind":"capability"}`,
+		"provides with ^":             `{` + base + `,"provides":[{"id":"a.b","version":"^1"}]}`,
+		"requires as a number":        `{` + base + `,"requires":[{"id":"a.b","version":1}]}`,
+		"requires with ^^":            `{` + base + `,"requires":[{"id":"a.b","version":"^^1"}]}`,
+		"missing stability":           `{"id":"xihan.a.b","version":"1.0.0","primitives":"1","kind":"capability"}`,
+		"missing stage":               `{` + base + `,"contributes":{"pipeline":[{"middleware":"audit"}]}}`,
+		"missing requirement version": `{` + base + `,"requires":[{"id":"a.b"}]}`,
+		"missing config section":      `{` + base + `,"contributes":{"config":{"schema":"x"}}}`,
+		"trailing object":             `{` + base + `} {}`,
+		"trailing text":               `{` + base + `}x`,
+		"operation ends with -":       `{` + base + `,"contributes":{"operations":["orders-.create"]}}`,
+		"operation with --":           `{` + base + `,"contributes":{"operations":["order--lines.list"]}}`,
+		"operation verb with -":       `{` + base + `,"contributes":{"operations":["orders.create-"]}}`,
+		"not an object":               `[]`,
+		"null manifest":               `null`,
+	}
+	for name, data := range rejected {
+		_, err := manifest.Read([]byte(data))
+		var framework *primitives.FrameworkError
+		if !errors.As(err, &framework) || framework.Code != primitives.ErrorCodeInvalidArgument {
+			t.Errorf("%s must be rejected with %s, got %v", name, primitives.ErrorCodeInvalidArgument, err)
+		}
+	}
+}

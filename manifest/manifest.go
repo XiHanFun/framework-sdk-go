@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -60,10 +62,11 @@ var (
 	permissionPattern   = regexp.MustCompile(`^(net\.outbound|fs\.read|fs\.write|capability):.+$`)
 	bindingNamePattern  = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 	bindingTypePattern  = regexp.MustCompile(`^[a-z]+(:[a-z]+)?$`)
-	operationPattern    = regexp.MustCompile(`^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$`)
-	sectionPattern      = regexp.MustCompile(`^XiHan:[A-Z][A-Za-z0-9]*(:[A-Z][A-Za-z0-9]*)*$`)
-	healthPattern       = regexp.MustCompile(`^[a-z][a-z0-9.-]*$`)
-	permCodePattern     = regexp.MustCompile(`^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$`)
+	// operationPattern 是操作 ID 文法 <resource>.<verb>（RFC-0011，与 operation.IsID 一致）：连字符只在字母数字之间
+	operationPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*\.[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
+	sectionPattern   = regexp.MustCompile(`^XiHan:[A-Z][A-Za-z0-9]*(:[A-Z][A-Za-z0-9]*)*$`)
+	healthPattern    = regexp.MustCompile(`^[a-z][a-z0-9.-]*$`)
+	permCodePattern  = regexp.MustCompile(`^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$`)
 )
 
 // IsManifestID 判断清单 ID 是否符合 xihan.<领域>.<名称>。
@@ -96,14 +99,34 @@ func (v InterfaceVersion) MarshalText() ([]byte, error) {
 	return []byte(strconv.Itoa(int(v))), nil
 }
 
-// UnmarshalText 从数字字符串解码；^N 与 N 等价。
+// UnmarshalText 从数字字符串解码：只能是 ^[1-9][0-9]*$（primitives 与 provides[].version，Schema 不允许 ^）；
+// 只有 requires[].version 可以带 ^，由 CapabilityRequirement 自己解码
 func (v *InterfaceVersion) UnmarshalText(text []byte) error {
+	if !versionPattern.Match(text) {
+		return invalid("the interface version '%s' must be a positive integer written as a string of digits, without ^", text)
+	}
+	value, err := strconv.Atoi(string(text))
+	if err != nil {
+		return invalid("the interface version '%s' is out of range", text)
+	}
+	*v = InterfaceVersion(value)
+	return nil
+}
+
+// requirementVersion 是 requires[].version：数字字符串，可以带 ^，^N 与 N 等价
+type requirementVersion InterfaceVersion
+
+// UnmarshalText 从 [^]N 解码
+func (v *requirementVersion) UnmarshalText(text []byte) error {
 	match := rangePattern.FindSubmatch(text)
 	if match == nil {
-		return invalid("the interface version '%s' must be a positive integer, optionally prefixed with ^", text)
+		return invalid("the required interface version '%s' must be a positive integer written as a string of digits, optionally prefixed with ^", text)
 	}
-	value, _ := strconv.Atoi(string(match[2]))
-	*v = InterfaceVersion(value)
+	value, err := strconv.Atoi(string(match[2]))
+	if err != nil {
+		return invalid("the required interface version '%s' is out of range", text)
+	}
+	*v = requirementVersion(value)
 	return nil
 }
 
@@ -131,6 +154,20 @@ type CapabilityRequirement struct {
 	ID       string           `json:"id"`
 	Version  InterfaceVersion `json:"version"`
 	Optional bool             `json:"optional,omitempty"`
+}
+
+// UnmarshalJSON 解码依赖：version 可以带 ^（Schema 里只有 requires[].version 可以）
+func (r *CapabilityRequirement) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		ID       string             `json:"id"`
+		Version  requirementVersion `json:"version"`
+		Optional bool               `json:"optional"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*r = CapabilityRequirement{ID: wire.ID, Version: InterfaceVersion(wire.Version), Optional: wire.Optional}
+	return nil
 }
 
 // ParseRequirement 解析 id@[^]version[?]；^N 与 N 等价。
@@ -211,12 +248,25 @@ type Manifest struct {
 	Entry       string                  `json:"entry,omitempty"`
 }
 
-// Read 解析并校验清单 JSON；未知字段、格式与跨字段约束都算失败（PRIMITIVES_VALIDATION_001）。
+// Read 按 Schema 解析并校验清单 JSON（PRIMITIVES_VALIDATION_001）：成员名区分大小写，未知成员、缺必填成员、任何位置的 null、
+// JSON 之后的多余内容、格式与跨字段约束都算失败；接口版本必须是数字字符串，只有 requires[].version 可以带 ^
 func Read(data []byte) (*Manifest, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
+	var raw json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
+		return nil, &primitives.FrameworkError{Code: primitives.ErrorCodeInvalidArgument, Message: "The manifest is not valid JSON.", Cause: err}
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, invalid("the manifest has content after the JSON object")
+	}
+	if err := checkShape(raw, reflect.TypeFor[Manifest](), "$"); err != nil {
+		return nil, err
+	}
+	strict := json.NewDecoder(bytes.NewReader(raw))
+	strict.DisallowUnknownFields()
 	var manifest Manifest
-	if err := decoder.Decode(&manifest); err != nil {
+	if err := strict.Decode(&manifest); err != nil {
 		return nil, &primitives.FrameworkError{Code: primitives.ErrorCodeInvalidArgument, Message: "The manifest is not valid JSON for the schema.", Cause: err}
 	}
 	if err := manifest.Validate(); err != nil {
