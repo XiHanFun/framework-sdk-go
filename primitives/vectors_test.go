@@ -190,3 +190,24 @@ func argumentsOf(t *testing.T, raw json.RawMessage) map[string]any {
 	}
 	return arguments
 }
+
+// TestBaggageValuesFollowTheVectors 回放 baggage-keys.json 的 values：已登记键的值能否进入调用上下文
+func TestBaggageValuesFollowTheVectors(t *testing.T) {
+	vectors, err := conformance.BaggageKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range vectors.Values.Acceptable {
+		if !primitives.IsBaggageValueAcceptable(value) || !primitives.IsBaggageEntryAcceptable(primitives.BaggageTenant, value) {
+			t.Errorf("%q must be acceptable", value)
+		}
+	}
+	for _, value := range vectors.Values.Unacceptable {
+		if primitives.IsBaggageValueAcceptable(value) || primitives.IsBaggageEntryAcceptable(primitives.BaggageCorrelation, value) {
+			t.Errorf("%q must be unacceptable", value)
+		}
+		if !primitives.IsBaggageEntryAcceptable(primitives.BaggageIdempotencyKey, value) || !primitives.IsBaggageEntryAcceptable("xihan.feature-flag", value) {
+			t.Errorf("%q: the idempotency key and unregistered keys are not checked here", value)
+		}
+	}
+}

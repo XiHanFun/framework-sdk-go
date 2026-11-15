@@ -105,12 +105,16 @@ func WithTraceParent(traceParent string) Option {
 	}
 }
 
-// WithBaggage 设置多个 Baggage 键值；键必须符合 xihan.<name>，不合法的键是编程错误。
+// WithBaggage 设置多个 Baggage 键值；键必须符合 xihan.<name>，不合法的键是编程错误。已登记键的值不能进入上下文时
+// （空、超过 256 个 UTF-16 码元、含控制字符，primitives.IsBaggageEntryAcceptable）丢弃这个成员，与 W3C Baggage 忽略
+// 不合法的成员一致；幂等键例外（ADR-0204、ADR-0233）
 func WithBaggage(baggage map[string]string) Option {
 	return func(c *Context) {
 		for key, value := range baggage {
 			mustBaggageKey(key)
-			c.baggage[key] = value
+			if primitives.IsBaggageEntryAcceptable(key, value) {
+				c.baggage[key] = value
+			}
 		}
 	}
 }
@@ -210,12 +214,15 @@ func (c *Context) GetBaggage(key string) (string, bool) {
 	return value, ok
 }
 
-// WithBaggage 派生一个多一个 Baggage 键值的上下文；键必须符合 xihan.<name>。
+// WithBaggage 派生一个多一个 Baggage 键值的上下文；键必须符合 xihan.<name>。已登记键的值不能进入上下文时丢弃这个成员
+// （规则同选项 WithBaggage），派生的上下文保持原来的 Baggage
 func (c *Context) WithBaggage(key, value string) *Context {
 	mustBaggageKey(key)
 	derived := *c
 	derived.baggage = c.Baggage()
-	derived.baggage[key] = value
+	if primitives.IsBaggageEntryAcceptable(key, value) {
+		derived.baggage[key] = value
+	}
 	return &derived
 }
 
