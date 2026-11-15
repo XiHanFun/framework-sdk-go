@@ -4,6 +4,7 @@ package operation
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -196,40 +197,60 @@ func decode[Req any](payload []byte) (Req, *primitives.Error) {
 	return request, nil
 }
 
-// 上下文对象袋里的键。
-type contextKey int
+// callKey 是一次调用的状态在派生上下文里的键
+type callKey struct{}
 
-const (
-	descriptorKey contextKey = iota
-	requestKey
-	responseKey
-)
+// call 是一次调用的状态：描述、请求、handle 阶段的终点与它写回的响应载荷。每次调用各有一份，经派生的上下文传给管道，
+// 不写进对象袋：同一上下文上先后、嵌套或并发的调用互不串用，调用结束后调用方的上下文与对象袋保持原样
+type call struct {
+	descriptor *Descriptor
+	request    Request
+	terminal   pipeline.Step
+	response   []byte
+	responded  bool
+}
 
-// Current 返回当前调用的操作描述（管道里的中间件用）。
+// begin 为一次调用派生上下文：管道与处理器看到的是它，调用方的上下文不变
+func begin(ctx *invocation.Context, state *call) *invocation.Context {
+	scoped := *ctx
+	scoped.Context = context.WithValue(ctx.Context, callKey{}, state)
+	return &scoped
+}
+
+// current 取当前调用的状态
+func current(ctx *invocation.Context) (*call, bool) {
+	if ctx == nil || ctx.Context == nil {
+		return nil, false
+	}
+	state, ok := ctx.Value(callKey{}).(*call)
+	return state, ok
+}
+
+// Current 返回当前调用的操作描述（管道里的中间件用）；只在调用期间、经管道传下来的上下文上可见
 func Current(ctx *invocation.Context) (*Descriptor, bool) {
-	value, ok := ctx.Get(descriptorKey)
+	state, ok := current(ctx)
 	if !ok {
 		return nil, false
 	}
-	return value.(*Descriptor), true
+	return state.descriptor, true
 }
 
-// RequestOf 返回当前调用的 XGI 请求。
+// RequestOf 返回当前调用的 XGI 请求；类型化调用只有 ID
 func RequestOf(ctx *invocation.Context) (Request, bool) {
-	value, ok := ctx.Get(requestKey)
+	state, ok := current(ctx)
 	if !ok {
 		return Request{}, false
 	}
-	return value.(Request), true
+	return state.request, true
 }
 
-// ResponsePayloadOf 返回 handle 阶段写回的响应载荷（成功时）。
+// ResponsePayloadOf 返回 handle 阶段写回的响应载荷（成功时）；还没有响应时第二个返回值为假
 func ResponsePayloadOf(ctx *invocation.Context) ([]byte, bool) {
-	value, ok := ctx.Get(responseKey)
-	if !ok {
+	state, ok := current(ctx)
+	if !ok || !state.responded {
 		return nil, false
 	}
-	return value.([]byte), true
+	return state.response, true
 }
 
 // Invoker 让操作经过完整管道执行。
@@ -259,14 +280,19 @@ func (i *Invoker) Invoke(ctx *invocation.Context, request Request) Response {
 	if !ok {
 		return Response{Outcome: primitives.Fail[primitives.Unit](primitives.NotFound(ErrorCodeNotFound, MessageNotFound, map[string]any{"id": request.ID}))}
 	}
-	ctx.Set(descriptorKey, descriptor)
-	ctx.Set(requestKey, request)
-	outcome := i.step(ctx)
+	state := &call{descriptor: descriptor, request: request}
+	state.terminal = func(ctx *invocation.Context) primitives.Result[primitives.Unit] {
+		response := descriptor.Execute(ctx, request.Payload)
+		if response.Outcome.OK() {
+			state.response, state.responded = response.Payload, true
+		}
+		return response.Outcome
+	}
+	outcome := i.step(begin(ctx, state))
 	if !outcome.OK() {
 		return Response{Outcome: outcome}
 	}
-	payload, _ := ResponsePayloadOf(ctx)
-	return Response{Outcome: outcome, Payload: payload}
+	return Response{Outcome: outcome, Payload: state.response}
 }
 
 // Invoke 是类型化入口：不经 JSON，直接以请求对象执行；类型与登记不符返回 KERNEL_VALIDATION_002。
@@ -280,40 +306,23 @@ func Invoke[Req, Res any](invoker *Invoker, ctx *invocation.Context, id string, 
 		return primitives.Fail[Res](primitives.Validation(ErrorCodeTypeMismatch, MessageTypeMismatch, map[string]any{"id": id}))
 	}
 	var result primitives.Result[Res]
-	ctx.Set(descriptorKey, descriptor)
-	ctx.Set(requestKey, Request{ID: id})
-	outcome := invoker.stepWith(ctx, func(ctx *invocation.Context) primitives.Result[primitives.Unit] {
+	state := &call{descriptor: descriptor, request: Request{ID: id}}
+	state.terminal = func(ctx *invocation.Context) primitives.Result[primitives.Unit] {
 		result = handler.Handle(ctx, request)
 		return result.Unit()
-	})
+	}
+	outcome := invoker.step(begin(ctx, state))
 	if !outcome.OK() {
 		return primitives.Fail[Res](outcome.Err())
 	}
 	return result
 }
 
-// stepWith 以自定义终点执行管道：类型化调用在 handle 阶段直接调处理器。
-func (i *Invoker) stepWith(ctx *invocation.Context, terminal pipeline.Step) primitives.Result[primitives.Unit] {
-	ctx.Set(terminalKey, terminal)
-	return i.step(ctx)
-}
-
-// terminalKey 是类型化调用放在对象袋里的终点。
-const terminalKey contextKey = 100
-
-// dispatch 是管道的终点：执行当前操作并把响应载荷写回上下文。
+// dispatch 是管道的终点：执行这次调用自己的终点（XGI 调用解码、执行、编码，类型化调用直接调处理器）
 func dispatch(ctx *invocation.Context) primitives.Result[primitives.Unit] {
-	if terminal, ok := ctx.Get(terminalKey); ok {
-		return terminal.(pipeline.Step)(ctx)
-	}
-	descriptor, ok := Current(ctx)
+	state, ok := current(ctx)
 	if !ok {
 		return primitives.Fail[primitives.Unit](primitives.NotFound(ErrorCodeNotFound, MessageNotFound, nil))
 	}
-	request, _ := RequestOf(ctx)
-	response := descriptor.Execute(ctx, request.Payload)
-	if response.Outcome.OK() {
-		ctx.Set(responseKey, response.Payload)
-	}
-	return response.Outcome
+	return state.terminal(ctx)
 }
