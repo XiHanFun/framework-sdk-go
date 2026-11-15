@@ -141,7 +141,7 @@ func TestErrorMessagesResolveThroughTheDefaultCatalog(t *testing.T) {
 	if err.WithText("literal").Message() != "literal" {
 		t.Error("text wins")
 	}
-	if primitives.FormatMessage("{0} of {count:%03d}", map[string]any{"0": "a", "count": 7}) != "a of 007" {
+	if primitives.FormatMessage("{0} of {count:D3}", map[string]any{"0": "a", "count": 7}) != "a of 007" {
 		t.Error("format")
 	}
 	if primitives.FormatMessage("{missing}", nil) != "{missing}" {

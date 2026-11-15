@@ -1,7 +1,6 @@
 package primitives
 
 import (
-	"fmt"
 	"regexp"
 	"sort"
 	"strconv"
@@ -16,9 +15,6 @@ const MaxMessageKeyLength = 128
 // 首段是领域词或应用自定义的小写标识（操作 ID 的资源段把连字符换成下划线后即是，如 tenant_members.list.description）
 var messageKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`)
 
-// placeholderPattern 匹配模板里的 {name} / {0} / {name:format} 占位符。
-var placeholderPattern = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+)(?::([^{}]*))?\}`)
-
 // IsMessageKey 判断消息键是否合法：符合文法且不超过 MaxMessageKeyLength 个字符
 func IsMessageKey(key string) bool {
 	return len(key) <= MaxMessageKeyLength && messageKeyPattern.MatchString(key)
@@ -30,35 +26,6 @@ func MessageKeyDomain(key string) string {
 		return ""
 	}
 	return key[:strings.IndexByte(key, '.')]
-}
-
-// Placeholders 列出模板里的占位符名（按出现顺序、去重）。
-func Placeholders(template string) []string {
-	var names []string
-	seen := map[string]bool{}
-	for _, match := range placeholderPattern.FindAllStringSubmatch(template, -1) {
-		if !seen[match[1]] {
-			seen[match[1]] = true
-			names = append(names, match[1])
-		}
-	}
-	return names
-}
-
-// FormatMessage 用参数填充模板：{name} 取命名参数，{0} 取位置参数（键 "0"、"1"…），
-// 可带 :format（按 Go 的 fmt 动词解释，如 {count:%05d}；其他写法原样 Sprint）；缺参数的占位符原样保留。
-func FormatMessage(template string, arguments map[string]any) string {
-	return placeholderPattern.ReplaceAllStringFunc(template, func(placeholder string) string {
-		match := placeholderPattern.FindStringSubmatch(placeholder)
-		value, ok := arguments[match[1]]
-		if !ok {
-			return placeholder
-		}
-		if format := match[2]; format != "" && strings.HasPrefix(format, "%") {
-			return fmt.Sprintf(format, value)
-		}
-		return FormatValue(value)
-	})
 }
 
 // Positional 把位置参数转成以 "0"、"1"… 为键的参数表。
@@ -137,20 +104,37 @@ func ResolveMessage(key string, arguments map[string]any) (string, bool) {
 	return resolver.Resolve(key, locale, arguments)
 }
 
-// Catalog 是一份内存消息目录：区域 → 键 → 模板；实现 MessageResolver，区域没有该键时回退到 en-US。
+// Catalog 是一份内存消息目录：区域 → 键 → 模板；实现 MessageResolver，区域没有该键时回退到 en-US，区域名比较不区分大小写
 type Catalog map[string]map[string]string
 
-// Resolve 实现 MessageResolver。
+// Resolve 实现 MessageResolver（RFC-0010）：按严格格式化解析，找不到键或任一占位符缺值即返回假，调用方退回 Describe
 func (c Catalog) Resolve(key, locale string, arguments map[string]any) (string, bool) {
+	template, ok := c.template(locale, key)
+	if !ok && !strings.EqualFold(locale, DefaultCatalogLocale) {
+		template, ok = c.template(DefaultCatalogLocale, key)
+	}
+	if !ok {
+		return "", false
+	}
+	return TryFormatMessage(template, arguments)
+}
+
+// template 按区域（不区分大小写）与键取模板
+func (c Catalog) template(locale, key string) (string, bool) {
 	if templates, ok := c[locale]; ok {
 		if template, ok := templates[key]; ok {
-			return FormatMessage(template, arguments), true
+			return template, true
 		}
 	}
-	if locale != "en-US" {
-		if template, ok := c["en-US"][key]; ok {
-			return FormatMessage(template, arguments), true
+	for candidate, templates := range c {
+		if candidate != locale && strings.EqualFold(candidate, locale) {
+			if template, ok := templates[key]; ok {
+				return template, true
+			}
 		}
 	}
 	return "", false
 }
+
+// DefaultCatalogLocale 是消息目录的默认区域：目录里找不到请求区域的键时回退到它（RFC-0010）
+const DefaultCatalogLocale = "en-US"
