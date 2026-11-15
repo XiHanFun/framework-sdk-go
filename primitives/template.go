@@ -118,7 +118,8 @@ func render(template string, arguments map[string]any, strict bool) (string, boo
 //   - F[n]：定点小数，n 位小数，缺省 2
 //   - N[n]：千分位用 ","、小数点用 "."，n 位小数，缺省 2，负号在前
 //
-// F 与 N 按值的精确十进制展开舍入，正好一半时远离零（0.125 写 F2 得 0.13，2.675 写 F2 得 2.67，2.5 写 F0 得 3）。
+// F 与 N 按值的精确十进制展开舍入，正好一半时取偶（四舍六入五成双，与 .NET 一致）：0.125 写 F2 得 0.12，0.375 得 0.38，
+// 2.5 写 F0 得 2、3.5 得 4、-2.5 得 -2；2.675 的二进制值略小于 2.675，不是正好一半，写 F2 得 2.67。
 // 空说明符、子集之外的说明符（日期、自定义数字模式等 .NET 格式串）与值不适用的说明符按无格式输出，即 FormatValue
 func FormatArgument(value any, format string) string {
 	specifier, precision, ok := parseFormat(format)
@@ -139,7 +140,7 @@ func FormatArgument(value any, format string) string {
 			precision = 2
 		}
 		if rational, ok := rationalOf(value); ok {
-			text := rational.FloatString(precision)
+			text := formatFixed(rational, precision)
 			if specifier == 'N' {
 				text = groupThousands(text)
 			}
@@ -180,6 +181,32 @@ func padDigits(integer *big.Int, base, precision int, upper bool) string {
 		digits = strings.Repeat("0", precision-len(digits)) + digits
 	}
 	if integer.Sign() < 0 {
+		return "-" + digits
+	}
+	return digits
+}
+
+// formatFixed 写 precision 位小数的定点小数：按精确值舍入，正好一半时取偶，负号在前（舍入成零的负数写 -0.00，与 strconv 一致）
+func formatFixed(value *big.Rat, precision int) string {
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(precision)), nil)
+	numerator := new(big.Int).Mul(new(big.Int).Abs(value.Num()), scale)
+	quotient, remainder := new(big.Int).QuoRem(numerator, value.Denom(), new(big.Int))
+	switch remainder.Lsh(remainder, 1).Cmp(value.Denom()) {
+	case 1:
+		quotient.Add(quotient, big.NewInt(1))
+	case 0:
+		if quotient.Bit(0) == 1 {
+			quotient.Add(quotient, big.NewInt(1))
+		}
+	}
+	digits := quotient.String()
+	if precision > 0 {
+		if len(digits) <= precision {
+			digits = strings.Repeat("0", precision-len(digits)+1) + digits
+		}
+		digits = digits[:len(digits)-precision] + "." + digits[len(digits)-precision:]
+	}
+	if value.Sign() < 0 {
 		return "-" + digits
 	}
 	return digits

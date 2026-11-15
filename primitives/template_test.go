@@ -65,7 +65,7 @@ func TestTryFormatMessageIsStrict(t *testing.T) {
 	}
 }
 
-// TestPortableFormatSpecifiers 核对可移植的格式说明符子集：D、X / x、F、N，F 与 N 正好一半时远离零
+// TestPortableFormatSpecifiers 核对可移植的格式说明符子集：D、X / x、F、N，F 与 N 按精确值舍入、正好一半时取偶
 func TestPortableFormatSpecifiers(t *testing.T) {
 	cases := []struct {
 		value  any
@@ -89,10 +89,11 @@ func TestPortableFormatSpecifiers(t *testing.T) {
 		{uint8(10), "X2", "0A"},
 		{0, "X", "0"},
 		{-1, "X", "-1"},
-		{0.125, "F2", "0.13"},
+		{0.125, "F2", "0.12"},
+		{0.375, "F2", "0.38"},
 		{2.675, "F2", "2.67"},
-		{2.5, "F0", "3"},
-		{-2.5, "F0", "-3"},
+		{2.5, "F0", "2"},
+		{-2.5, "F0", "-2"},
 		{3.5, "F0", "4"},
 		{1.005, "F2", "1.00"},
 		{7, "F", "7.00"},
@@ -101,8 +102,11 @@ func TestPortableFormatSpecifiers(t *testing.T) {
 		{1.0 / 3, "F4", "0.3333"},
 		{float32(0.1), "F9", "0.100000001"},
 		{json.Number("2.675"), "F2", "2.68"},
+		{json.Number("2.665"), "F2", "2.66"},
+		{-0.001, "F2", "-0.00"},
 		{1234567.891, "N", "1,234,567.89"},
-		{-1234.5, "N0", "-1,235"},
+		{-1234.5, "N0", "-1,234"},
+		{1235.5, "N0", "1,236"},
 		{999.999, "N2", "1,000.00"},
 		{12, "N1", "12.0"},
 		{123, "N0", "123"},

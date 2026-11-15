@@ -101,6 +101,30 @@ func TestMessageKeysFollowTheTemplateVectors(t *testing.T) {
 	}
 }
 
+// TestTemplatesFollowTheVectors 回放 message-templates.json 的 format：宽松与严格格式化的结果
+func TestTemplatesFollowTheVectors(t *testing.T) {
+	vectors, err := conformance.MessageTemplates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range vectors.Format {
+		arguments := argumentsOf(t, c.Arguments)
+		if got := primitives.FormatMessage(c.Template, arguments); got != c.Lenient {
+			t.Errorf("%s: FormatMessage(%q) = %q, want %q", c.Name, c.Template, got, c.Lenient)
+		}
+		strict, ok := primitives.TryFormatMessage(c.Template, arguments)
+		switch {
+		case c.Strict == nil && ok:
+			t.Errorf("%s: TryFormatMessage(%q) must fail, got %q", c.Name, c.Template, strict)
+		case c.Strict != nil && (!ok || strict != *c.Strict):
+			t.Errorf("%s: TryFormatMessage(%q) = %q (%v), want %q", c.Name, c.Template, strict, ok, *c.Strict)
+		}
+		if placeholders, want := primitives.Placeholders(c.Template), rules.Placeholders(c.Template); !reflect.DeepEqual(placeholders, want) {
+			t.Errorf("%s: Placeholders(%q) = %v, want %v", c.Name, c.Template, placeholders, want)
+		}
+	}
+}
+
 // TestDescribeFollowsTheVectors 回放 message-templates.json 的 describe
 func TestDescribeFollowsTheVectors(t *testing.T) {
 	vectors, err := conformance.MessageTemplates()
