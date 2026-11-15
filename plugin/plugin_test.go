@@ -581,6 +581,26 @@ func TestGrpcErrorsMapToErrorCodes(t *testing.T) {
 	}
 }
 
+// TestHostInvokeErrorsCarryTheOperationID 核对回调 Invoke 的传输层失败映射成未登记或载荷不合法时带上 id，内核模板能填全
+func TestHostInvokeErrorsCarryTheOperationID(t *testing.T) {
+	notFound := withOperationID(FromGrpcError(status.Error(codes.Unimplemented, "missing")), "orders.create")
+	if notFound.Details["id"] != "orders.create" || notFound.Details["reason"] != "missing" || notFound.Message() != "Operation 'orders.create' is not registered." {
+		t.Errorf("not found %v %q", notFound.Details, notFound.Message())
+	}
+	invalid := withOperationID(FromGrpcError(status.Error(codes.InvalidArgument, "$.quantity")), "orders.create")
+	if invalid.Details["id"] != "orders.create" || invalid.Message() != "The payload of operation 'orders.create' is not valid: $.quantity" {
+		t.Errorf("invalid %v %q", invalid.Details, invalid.Message())
+	}
+	unavailable := FromGrpcError(status.Error(codes.Unavailable, "down"))
+	if withOperationID(unavailable, "orders.create") != unavailable {
+		t.Error("other errors stay as they are")
+	}
+	own := operation.InvalidPayload("orders.other", "$")
+	if withOperationID(own, "orders.create").Details["id"] != "orders.other" {
+		t.Error("an existing id stays")
+	}
+}
+
 func TestLogHandlerWritesHostLines(t *testing.T) {
 	var buffer bytes.Buffer
 	logger := newTestLogger(&buffer)

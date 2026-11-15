@@ -47,11 +47,12 @@ func HostOf(ctx *invocation.Context) (*Host, bool) {
 // Endpoint 返回宿主回调端点。
 func (h *Host) Endpoint() Endpoint { return h.endpoint }
 
-// Invoke 以插件身份经宿主完整管道调用操作（需要权限 capability:kernel.pipeline）；传输层失败映射为原语层错误。
+// Invoke 以插件身份经宿主完整管道调用操作（需要权限 capability:kernel.pipeline）；传输层失败映射为原语层错误，
+// 映射成操作未登记（KERNEL_NOTFOUND_001）或载荷不合法（KERNEL_VALIDATION_001）时带上操作 ID，与内核模板的参数 {id, …} 一致
 func (h *Host) Invoke(ctx *invocation.Context, id string, payload []byte) operation.Response {
 	response, err := h.client.Invoke(h.outgoing(ctx), &pluginv1.InvokeRequest{Operation: id, Payload: payload, Metadata: ToMetadata(ctx)})
 	if err != nil {
-		return operation.Response{Outcome: primitives.Fail[primitives.Unit](FromGrpcError(err))}
+		return operation.Response{Outcome: primitives.Fail[primitives.Unit](withOperationID(FromGrpcError(err), id))}
 	}
 	outcome := FromStatus(response.Status)
 	if !outcome.OK() {
@@ -93,6 +94,24 @@ func (h *Host) outgoing(ctx *invocation.Context) *invocation.Context {
 	derived := *ctx
 	derived.Context = metadata.AppendToOutgoingContext(ctx.Context, SessionMetadataKey, h.session)
 	return &derived
+}
+
+// withOperationID 给操作未登记与载荷不合法的错误补上参数 id（它们的模板是 Operation '{id}' …）；已有 id 或是别的错误时原样返回
+func withOperationID(err *primitives.Error, id string) *primitives.Error {
+	if err == nil || (err.Code != operation.ErrorCodeNotFound && err.Code != operation.ErrorCodeInvalidPayload) {
+		return err
+	}
+	if _, ok := err.Details["id"]; ok {
+		return err
+	}
+	details := make(map[string]any, len(err.Details)+1)
+	for name, value := range err.Details {
+		details[name] = value
+	}
+	details["id"] = id
+	clone := *err
+	clone.Details = details
+	return &clone
 }
 
 // FromGrpcError 把 gRPC 状态映射为原语层错误（invocation.md §3 的映射表，从插件视角看宿主）。
