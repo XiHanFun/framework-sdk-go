@@ -23,6 +23,7 @@ func TestKernelTemplatesMatchTheReferenceImplementation(t *testing.T) {
 		"kernel.invocation.deadline_exceeded":     "The invocation exceeded its deadline.",
 		"kernel.invocation.deadline_before_start": "The invocation exceeded its deadline before it started.",
 		"kernel.invocation.cancelled":             "The invocation was canceled.",
+		"kernel.invocation.unhandled_exception":   "An unhandled exception occurred during the invocation.",
 		"primitives.result.uninitialized":         "The result is uninitialized: a default value is not a valid result.",
 	}
 	for key, template := range want {

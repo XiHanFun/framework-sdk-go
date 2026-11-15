@@ -32,6 +32,8 @@ const (
 	MessageDeadlineBeforeStart = "kernel.invocation.deadline_before_start"
 	// MessageCancelled 是取消的消息键
 	MessageCancelled = "kernel.invocation.cancelled"
+	// MessageUnhandledException 是调用里发生了未处理的 panic（.NET 的未处理异常）的消息键
+	MessageUnhandledException = "kernel.invocation.unhandled_exception"
 )
 
 // 这些键的 en-US 默认模板，逐字照 .NET XiHan.Framework.Kernel/Localization/en-US.json
@@ -40,6 +42,7 @@ func init() {
 		MessageDeadlineExceeded:    "The invocation exceeded its deadline.",
 		MessageDeadlineBeforeStart: "The invocation exceeded its deadline before it started.",
 		MessageCancelled:           "The invocation was canceled.",
+		MessageUnhandledException:  "An unhandled exception occurred during the invocation.",
 	})
 }
 

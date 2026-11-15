@@ -6,9 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
@@ -383,11 +386,31 @@ func (i *Invoker) run(ctx *invocation.Context, state *call) primitives.Result[pr
 	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
 		return primitives.Fail[primitives.Unit](primitives.Timeout(invocation.ErrorCodeDeadlineExceeded, invocation.MessageDeadlineBeforeStart, nil))
 	}
-	outcome := i.step(begin(ctx, state))
+	outcome := i.guarded(begin(ctx, state), state.descriptor.Contract.ID)
 	if err := outcome.Err(); err != nil && err.Code == invocation.ErrorCodeCancelled && ctx.DeadlineExceeded() {
 		return primitives.Fail[primitives.Unit](primitives.Timeout(invocation.ErrorCodeDeadlineExceeded, invocation.MessageDeadlineExceeded, nil))
 	}
 	return outcome
+}
+
+// guarded 执行管道，把中间件或处理器的 panic 翻译为 KERNEL_UNEXPECTED_001（kernel.invocation.unhandled_exception，没有参数），
+// 与 .NET Observe 阶段翻译未处理的异常一致（RFC-0011 规则 5、规则 10）；panic 的值是 FrameworkError 时作为内部错误带上。
+// panic 的值与堆栈只写进日志（slog.Default，插件进程里是 stderr），不进错误，避免把内部细节交给调用方
+func (i *Invoker) guarded(ctx *invocation.Context, id string) (outcome primitives.Result[primitives.Unit]) {
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			return
+		}
+		slog.Default().Error("an operation panicked", "operation", id, "traceId", ctx.TraceID(), "panic", fmt.Sprint(recovered), "stack", string(debug.Stack()))
+		var inner *primitives.Error
+		var framework *primitives.FrameworkError
+		if err, ok := recovered.(error); ok && errors.As(err, &framework) {
+			inner = framework.ToError()
+		}
+		outcome = primitives.Fail[primitives.Unit](primitives.Unexpected(ErrorCodeUnexpected, invocation.MessageUnhandledException, nil, inner))
+	}()
+	return i.step(ctx)
 }
 
 // noResponse 是调用以成功结束、处理器却没有产出响应的错误（中间件以成功短路）
