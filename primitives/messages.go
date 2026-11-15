@@ -9,14 +9,20 @@ import (
 	"sync"
 )
 
-// messageKeyPattern 是消息键文法 ^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)+$（RFC-0001）。
-var messageKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)+$`)
+// MaxMessageKeyLength 是消息键的最大长度（RFC-0001、RFC-0010）
+const MaxMessageKeyLength = 128
+
+// messageKeyPattern 是消息键文法（RFC-0001、RFC-0010）：小写字母开头的点分段，至少两段，每段可含下划线；
+// 首段是领域词或应用自定义的小写标识（操作 ID 的资源段把连字符换成下划线后即是，如 tenant_members.list.description）
+var messageKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`)
 
 // placeholderPattern 匹配模板里的 {name} / {0} / {name:format} 占位符。
 var placeholderPattern = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+)(?::([^{}]*))?\}`)
 
-// IsMessageKey 判断消息键是否合法。
-func IsMessageKey(key string) bool { return messageKeyPattern.MatchString(key) }
+// IsMessageKey 判断消息键是否合法：符合文法且不超过 MaxMessageKeyLength 个字符
+func IsMessageKey(key string) bool {
+	return len(key) <= MaxMessageKeyLength && messageKeyPattern.MatchString(key)
+}
 
 // MessageKeyDomain 返回消息键的领域段（第一个点之前）；不合法时为空。
 func MessageKeyDomain(key string) string {
