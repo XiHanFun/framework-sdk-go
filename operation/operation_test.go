@@ -115,3 +115,22 @@ func TestRegistryRejectsDuplicatesAndBadIDs(t *testing.T) {
 		t.Error("ID grammar")
 	}
 }
+
+// TestExposeNamesMatchTheProtocol 核对暴露的协议名与 plugin.proto 的 OperationDeclaration.expose 一致，含 ai
+func TestExposeNamesMatchTheProtocol(t *testing.T) {
+	names := []string{operation.ExposeHTTP, operation.ExposeGrpc, operation.ExposeMcp, operation.ExposeCommandLine, operation.ExposeAI}
+	want := []string{"http", "grpc", "mcp", "commandline", "ai"}
+	for index := range want {
+		if names[index] != want[index] {
+			t.Errorf("expose %d = %q, want %q", index, names[index], want[index])
+		}
+	}
+	registry := operation.NewRegistry()
+	handler := operation.HandlerFunc[struct{}, struct{}](func(*invocation.Context, struct{}) primitives.Result[struct{}] { return primitives.Ok(struct{}{}) })
+	if err := operation.Add(registry, operation.Contract{ID: "answers.ask", Expose: []string{operation.ExposeAI, operation.ExposeMcp}}, handler, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if descriptor, _ := registry.Get("answers.ask"); len(descriptor.Contract.Expose) != 2 || descriptor.Contract.Expose[0] != "ai" {
+		t.Errorf("expose %v", descriptor.Contract.Expose)
+	}
+}

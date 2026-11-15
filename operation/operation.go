@@ -70,12 +70,14 @@ func InvalidPayload(id, reason string) *primitives.Error {
 // Capacity 是登记表的容量。
 const Capacity = 10000
 
-// 暴露的协议名。
+// 暴露的协议名，与 plugin.proto 的 OperationDeclaration.expose 一致
 const (
 	ExposeHTTP        = "http"
 	ExposeGrpc        = "grpc"
 	ExposeMcp         = "mcp"
 	ExposeCommandLine = "commandline"
+	// ExposeAI 是 AI 工具调用（RFC-0022）
+	ExposeAI = "ai"
 )
 
 // idPattern 是操作 ID 文法 <resource>.<verb>。
