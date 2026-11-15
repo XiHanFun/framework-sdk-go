@@ -79,7 +79,7 @@ func (h *Host) Publish(ctx *invocation.Context, envelopes ...Envelope) []primiti
 		if index < len(response.Results) {
 			results[index] = FromStatus(response.Results[index])
 		} else {
-			results[index] = primitives.Fail[primitives.Unit](primitives.Unexpected(ErrorCodeUnexpected, MessageUnexpected, nil, map[string]any{"reason": "the host returned fewer results than envelopes"}))
+			results[index] = primitives.Fail[primitives.Unit](primitives.Unexpected(ErrorCodeUnexpected, MessageUnexpected, map[string]any{"reason": "the host returned fewer results than envelopes"}, nil))
 		}
 	}
 	return results
@@ -127,6 +127,6 @@ func FromGrpcError(err error) *primitives.Error {
 		if errors.As(err, &connection) {
 			return connection
 		}
-		return primitives.Unexpected(ErrorCodeUnexpected, MessageUnexpected, nil, map[string]any{"status": code.String(), "reason": message})
+		return primitives.Unexpected(ErrorCodeUnexpected, MessageUnexpected, map[string]any{"status": code.String(), "reason": message}, nil)
 	}
 }

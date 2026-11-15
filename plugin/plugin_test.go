@@ -519,7 +519,7 @@ func TestNegotiationFollowsTheVectors(t *testing.T) {
 
 func TestStatusAndMetadataConversions(t *testing.T) {
 	inner := primitives.Literal("KERNEL_UNEXPECTED_001", "boom", nil, nil)
-	err := primitives.Unexpected("ORDERS_UNEXPECTED_001", "orders.failed", inner, map[string]any{"id": "o1"})
+	err := primitives.Unexpected("ORDERS_UNEXPECTED_001", "orders.failed", map[string]any{"id": "o1"}, inner)
 	encoded := ToProtoError(err)
 	if encoded.Code != "ORDERS_UNEXPECTED_001" || encoded.MessageKey != "orders.failed" || encoded.Details != `{"id":"o1"}` || encoded.Inner.Text != "boom" {
 		t.Errorf("encoded %+v", encoded)

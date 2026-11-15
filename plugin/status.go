@@ -68,7 +68,7 @@ func FromStatus(status *pluginv1.Status) primitives.Result[primitives.Unit] {
 		return primitives.Success()
 	}
 	if status == nil || status.Error == nil {
-		return primitives.Fail[primitives.Unit](primitives.Unexpected(ErrorCodeUnexpected, MessageUnexpected, nil, map[string]any{"reason": "the status carries no error"}))
+		return primitives.Fail[primitives.Unit](primitives.Unexpected(ErrorCodeUnexpected, MessageUnexpected, map[string]any{"reason": "the status carries no error"}, nil))
 	}
 	return primitives.Fail[primitives.Unit](FromProtoError(status.Error))
 }

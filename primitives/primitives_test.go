@@ -151,7 +151,7 @@ func TestErrorMessagesResolveThroughTheDefaultCatalog(t *testing.T) {
 
 func TestErrorWireEncoding(t *testing.T) {
 	inner := primitives.Literal("KERNEL_UNEXPECTED_001", "boom", nil, nil)
-	err := primitives.Unexpected("ORDERS_UNEXPECTED_001", "orders.failed", inner, map[string]any{"id": "o1"})
+	err := primitives.Unexpected("ORDERS_UNEXPECTED_001", "orders.failed", map[string]any{"id": "o1"}, inner)
 	data, marshalErr := json.Marshal(err)
 	if marshalErr != nil {
 		t.Fatal(marshalErr)

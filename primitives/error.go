@@ -72,8 +72,8 @@ func Cancelled(code, messageKey string, details map[string]any) *Error {
 	return ofKind(KindCancelled, code, messageKey, details, nil)
 }
 
-// Unexpected 创建 UNEXPECTED 类错误，可带内部错误。
-func Unexpected(code, messageKey string, inner *Error, details map[string]any) *Error {
+// Unexpected 创建 UNEXPECTED 类错误，可带内部错误；参数顺序与其他工厂一致，先细节、后内部错误（RFC-0001、ADR-0137）
+func Unexpected(code, messageKey string, details map[string]any, inner *Error) *Error {
 	return ofKind(KindUnexpected, code, messageKey, details, inner)
 }
 
