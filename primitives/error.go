@@ -152,7 +152,7 @@ func (e *Error) MarshalJSON() ([]byte, error) {
 	return json.Marshal(errorJSON{Code: e.Code, Message: e.Message(), MessageKey: e.MessageKey, Details: e.Details, Inner: e.Inner})
 }
 
-// UnmarshalJSON 从线上编码还原（RFC-0001）：code 必填且合法；messageKey 有就必须合法；details 必须是 JSON 对象，
+// UnmarshalJSON 从线上编码还原（RFC-0001）：code 必填且合法；message 必填、是非空字符串；messageKey 有就必须合法；details 必须是 JSON 对象，
 // inner 必须是错误对象（null 与数组都拒绝）；成员名区分大小写，未知成员忽略
 func (e *Error) UnmarshalJSON(data []byte) error {
 	members, err := wireObject(data, "an error")
@@ -168,10 +168,8 @@ func (e *Error) UnmarshalJSON(data []byte) error {
 		return &FrameworkError{Code: ErrorCodeInvalidArgument, Message: fmt.Sprintf("The error code %s must match <DOMAIN>_<KIND>_<NNN>.", codeRaw)}
 	}
 	decoded := Error{Code: code}
-	if raw, has := members["message"]; has {
-		if decoded.Text, ok = wireString(raw); !ok {
-			return wireError("the member 'message' of an error must be a string", nil)
-		}
+	if decoded.Text, ok = wireString(members["message"]); !ok || decoded.Text == "" {
+		return wireError("an error on the wire needs the member 'message' as a non-empty string", nil)
 	}
 	if raw, has := members["messageKey"]; has {
 		if decoded.MessageKey, ok = wireString(raw); !ok || !IsMessageKey(decoded.MessageKey) {

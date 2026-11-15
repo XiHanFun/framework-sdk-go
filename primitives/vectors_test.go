@@ -34,6 +34,33 @@ func TestResultsFollowTheWireEncodingVectors(t *testing.T) {
 	}
 }
 
+// TestErrorsFollowTheWireEncodingVectors 回放 wire-encoding.json 的 errors
+func TestErrorsFollowTheWireEncodingVectors(t *testing.T) {
+	vectors, err := conformance.WireEncoding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range vectors.Errors.Valid {
+		var decoded primitives.Error
+		if err := json.Unmarshal(c.JSON, &decoded); err != nil {
+			t.Errorf("%s: %s must be read: %v", c.Name, c.JSON, err)
+			continue
+		}
+		encoded, err := json.Marshal(&decoded)
+		if err != nil {
+			t.Errorf("%s: %v", c.Name, err)
+			continue
+		}
+		assertSameJSON(t, c.Name, encoded, canonicalOf(c))
+	}
+	for _, c := range vectors.Errors.Invalid {
+		var decoded primitives.Error
+		if err := json.Unmarshal(c.JSON, &decoded); err == nil {
+			t.Errorf("%s: %s must be rejected", c.Name, c.JSON)
+		}
+	}
+}
+
 // roundTripResult 按样例的种类读结果再写出：value 是 Result[any]，unit 是 Result[Unit]，maybe 是 Result[Maybe[any]]
 func roundTripResult(kind string, data []byte) ([]byte, error) {
 	switch kind {

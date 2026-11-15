@@ -43,15 +43,11 @@ func TestErrorDecodingFollowsTheWireRules(t *testing.T) {
 	if decoded.Code != "ORDERS_UNEXPECTED_001" || decoded.Text != "failed" || decoded.MessageKey != "orders.failed" || decoded.Details["id"] != "o1" || decoded.Inner == nil || decoded.Inner.Code != "KERNEL_UNEXPECTED_001" || decoded.Inner.Text != "boom" {
 		t.Errorf("decoded %+v", decoded)
 	}
-	var bare primitives.Error
-	if err := json.Unmarshal([]byte(`{"code":"ORDERS_NOTFOUND_001","messageKey":"orders.missing"}`), &bare); err != nil || bare.Message() != "orders.missing" {
-		t.Errorf("without a message the key describes it: %+v %v", bare, err)
-	}
-
 	for _, data := range []string{
 		`null`, `[]`, `"ORDERS_NOTFOUND_001"`,
 		`{}`, `{"Code":"ORDERS_NOTFOUND_001","message":"m"}`, `{"code":null,"message":"m"}`, `{"code":1,"message":"m"}`, `{"code":"orders","message":"m"}`,
 		`{"code":"ORDERS_NOTFOUND_001","message":null}`, `{"code":"ORDERS_NOTFOUND_001","message":1}`,
+		`{"code":"ORDERS_NOTFOUND_001","messageKey":"orders.missing"}`, `{"code":"ORDERS_NOTFOUND_001","message":""}`, `{"code":"ORDERS_NOTFOUND_001","Message":"m"}`,
 		`{"code":"ORDERS_NOTFOUND_001","message":"m","messageKey":""}`, `{"code":"ORDERS_NOTFOUND_001","message":"m","messageKey":null}`,
 		`{"code":"ORDERS_NOTFOUND_001","message":"m","messageKey":"Orders.Missing"}`, `{"code":"ORDERS_NOTFOUND_001","message":"m","messageKey":"orders"}`,
 		`{"code":"ORDERS_NOTFOUND_001","message":"m","details":null}`, `{"code":"ORDERS_NOTFOUND_001","message":"m","details":[]}`, `{"code":"ORDERS_NOTFOUND_001","message":"m","details":"id"}`,
