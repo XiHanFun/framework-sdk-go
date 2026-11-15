@@ -60,6 +60,9 @@ func MapMaybe[T, U any](m Maybe[T], f func(T) U) Maybe[U] {
 	return Some(f(m.value))
 }
 
+// isMaybe 让 Result 认出 Maybe：成功值只有是 Maybe 时才可以是 null
+func (Maybe[T]) isMaybe() {}
+
 // MarshalJSON 实现线上编码：有值为值本身，无值为 null。
 func (m Maybe[T]) MarshalJSON() ([]byte, error) {
 	if !m.has {

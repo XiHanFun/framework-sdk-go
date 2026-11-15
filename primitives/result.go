@@ -98,38 +98,99 @@ func Bind[T, U any](r Result[T], f func(T) Result[U]) Result[U] {
 	return f(r.value)
 }
 
-// resultJSON 是 Result 的线上编码（RFC-0001）。
-type resultJSON[T any] struct {
-	OK    bool   `json:"ok"`
-	Value *T     `json:"value,omitempty"`
-	Error *Error `json:"error,omitempty"`
+// maybeValue 由 Maybe 实现：成功结果的值只有是 Maybe 时才可以是 null（RFC-0001）
+type maybeValue interface{ isMaybe() }
+
+// isUnit 判断 T 是否是 Unit：没有值的成功结果线上不写 value
+func isUnit[T any]() bool {
+	_, ok := any(*new(T)).(Unit)
+	return ok
 }
 
-// MarshalJSON 实现线上编码：{ "ok": true, "value": … } 或 { "ok": false, "error": … }。
+// isMaybe 判断 T 是否是 Maybe
+func isMaybe[T any]() bool {
+	_, ok := any(*new(T)).(maybeValue)
+	return ok
+}
+
+// MarshalJSON 实现线上编码（RFC-0001）：有值的成功 {"ok":true,"value":…}，没有值的成功（Result[Unit]）{"ok":true}，
+// 失败 {"ok":false,"error":{…}}；值编码成 null 而值类型不是 Maybe 时报错，可能没有的值用 Maybe
 func (r Result[T]) MarshalJSON() ([]byte, error) {
-	if r.ok {
-		return json.Marshal(resultJSON[T]{OK: true, Value: &r.value})
+	if !r.ok {
+		encoded, err := json.Marshal(r.Err())
+		if err != nil {
+			return nil, err
+		}
+		return append(append([]byte(`{"ok":false,"error":`), encoded...), '}'), nil
 	}
-	return json.Marshal(resultJSON[T]{OK: false, Error: r.Err()})
+	if isUnit[T]() {
+		return []byte(`{"ok":true}`), nil
+	}
+	encoded, err := json.Marshal(r.value)
+	if err != nil {
+		return nil, err
+	}
+	if string(encoded) == "null" && !isMaybe[T]() {
+		return nil, wireError("a successful result needs a value; a value that may be absent must be a Maybe", nil)
+	}
+	return append(append([]byte(`{"ok":true,"value":`), encoded...), '}'), nil
 }
 
-// UnmarshalJSON 从线上编码还原。
+// UnmarshalJSON 从线上编码还原（RFC-0001）：ok 必须是布尔值；成功不能带 error，有值的成功必须带 value（只有 Maybe 可以是 null），
+// 没有值的成功不能带 value；失败必须带 error 对象、不能带 value；成员名区分大小写，未知成员忽略
 func (r *Result[T]) UnmarshalJSON(data []byte) error {
-	var wire resultJSON[T]
-	if err := json.Unmarshal(data, &wire); err != nil {
+	members, err := wireObject(data, "a result")
+	if err != nil {
 		return err
 	}
-	if wire.OK {
-		var value T
-		if wire.Value != nil {
-			value = *wire.Value
+	okRaw, has := members["ok"]
+	if !has {
+		return wireError("a result on the wire needs the member 'ok'", nil)
+	}
+	var ok bool
+	switch string(okRaw) {
+	case "true":
+		ok = true
+	case "false":
+	default:
+		return wireError("the member 'ok' of a result must be a boolean", nil)
+	}
+	valueRaw, hasValue := members["value"]
+	errorRaw, hasError := members["error"]
+	if !ok {
+		if hasValue {
+			return wireError("a failed result on the wire must not carry a value", nil)
 		}
-		*r = Ok(value)
+		if !hasError {
+			return wireError("a failed result on the wire needs an error", nil)
+		}
+		var failure Error
+		if err := json.Unmarshal(errorRaw, &failure); err != nil {
+			return err
+		}
+		*r = Fail[T](&failure)
 		return nil
 	}
-	if wire.Error == nil {
-		return &FrameworkError{Code: ErrorCodeInvalidArgument, Message: "A failed result on the wire needs an error."}
+	if hasError {
+		return wireError("a successful result on the wire must not carry an error", nil)
 	}
-	*r = Fail[T](wire.Error)
+	if isUnit[T]() {
+		if hasValue {
+			return wireError("a successful result without a value must not carry the member 'value'", nil)
+		}
+		*r = Ok(*new(T))
+		return nil
+	}
+	if !hasValue {
+		return wireError("a successful result on the wire needs the member 'value'", nil)
+	}
+	if string(valueRaw) == "null" && !isMaybe[T]() {
+		return wireError("the value of a successful result must not be null unless it is a Maybe", nil)
+	}
+	var value T
+	if err := json.Unmarshal(valueRaw, &value); err != nil {
+		return wireError("the value of a successful result could not be decoded", err)
+	}
+	*r = Ok(value)
 	return nil
 }
