@@ -57,7 +57,7 @@ func FormatMessage(template string, arguments map[string]any) string {
 		if format := match[2]; format != "" && strings.HasPrefix(format, "%") {
 			return fmt.Sprintf(format, value)
 		}
-		return fmt.Sprint(value)
+		return FormatValue(value)
 	})
 }
 
@@ -70,7 +70,8 @@ func Positional(values ...any) map[string]any {
 	return arguments
 }
 
-// Describe 在没有文案时描述一个消息：键 (k=v, ...)，参数按键排序。
+// Describe 在没有文案时描述一个消息（RFC-0010）：没有参数时只有键，有参数时写 key (name=value, …)；
+// 值按 FormatValue 写，参数顺序规范不作规定，这里按名字排序
 func Describe(key string, arguments map[string]any) string {
 	if len(arguments) == 0 {
 		return key
@@ -82,7 +83,7 @@ func Describe(key string, arguments map[string]any) string {
 	sort.Strings(names)
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
-		parts = append(parts, name+"="+fmt.Sprint(arguments[name]))
+		parts = append(parts, name+"="+FormatValue(arguments[name]))
 	}
 	return key + " (" + strings.Join(parts, ", ") + ")"
 }
