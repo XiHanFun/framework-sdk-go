@@ -80,7 +80,6 @@ response := invoker.Invoke(ctx, operation.Request{ID: "orders.create", Payload: 
 本节列出与规范、.NET 参考实现对齐时改掉的旧行为，以及调用方怎么改。
 
 - `Success()` / `Result[Unit]` 编码为 `{"ok":true}`，旧版是 `{"ok":true,"value":{}}`；读取 `Result[Unit]` 时带 `value`（含 `{}`）即拒绝，不保留兼容路径。迁移：与旧版 Go 程序互通的一方同时升级；自己拼 JSON 的地方去掉 `"value":{}`。有值的成功缺 `value`、`value` 为 `null` 而值类型不是 `Maybe` 时旧版读成零值，现在拒绝；可能没有的值改用 `Result[Maybe[T]]`。写出时值编码成 `null`（如 `nil` 指针、`nil` 切片）而值类型不是 `Maybe` 也报错，空集合用非 `nil` 的空切片或空映射。
-
 - 内核错误的码、键与参数与 .NET 一致（en-US 默认模板逐字照 .NET 的语言文件，由 `primitives.DefaultTemplate` 取得，`Error.Message` 在进程默认解析器解析不出时用它，再退回 `Describe`）：
   - 载荷不合法的键由 `kernel.operation.payload_invalid` 改为 `kernel.operation.invalid_payload`，参数由 `{reason}` 改为 `{id, reason}`，`reason` 只写出错位置的 JSON 路径（`$.quantity`、`$.lines[1].quantity`、`$`），不再带 `encoding/json` 的报错文本与 Go 类型名（RFC-0011 规则 2）。新增 `operation.InvalidPayload(id, reason)`。宿主按键再翻译时旧键找不到文案。
   - 类型化调用类型不符的参数由 `{id}` 改为 `{id, expected, actual}`，值是「请求类型 -> 响应类型」。
