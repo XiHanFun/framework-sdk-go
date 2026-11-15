@@ -97,15 +97,19 @@ type registration struct {
 	order      int
 }
 
-// constraint 是一条顺序约束：first 在 second 之前。
+// constraint 是一条顺序约束：主体在声明时已解析成登记，目标是名字、在排序时解析；before 为真时主体在目标之前
 type constraint struct {
-	first, second string
+	subject *registration
+	target  string
+	before  bool
 }
 
-// Builder 收集中间件与顺序约束，按规范排序后构建管道。
+// Builder 收集中间件与顺序约束，按规范排序后构建管道。登记与约束的错误（重复登记、约束主体未登记或有歧义）
+// 在登记或声明时记下，Describe、Dump 与 Build 返回第一个；约束目标在排序时解析
 type Builder struct {
 	registrations []*registration
 	constraints   []constraint
+	err           error
 }
 
 // NewBuilder 创建空的构建器。
@@ -126,29 +130,73 @@ func (b *Builder) UseNamedInstance(instance string, middleware Middleware, stage
 	return b.add(middleware, instance, stage, placement, owner)
 }
 
-// add 登记一个中间件。
+// add 登记一个中间件：同一类型的默认实例只登记一次、命名实例的名字在类型内唯一，重复即登记错误（RFC-0004 规则 7）
 func (b *Builder) add(middleware Middleware, instance string, stage primitives.PipelineStage, placement Placement, owner string) *Builder {
 	if owner == "" {
 		owner = AppOwner
 	}
-	b.registrations = append(b.registrations, &registration{
-		middleware: middleware,
-		descriptor: Descriptor{Stage: stage, Middleware: middleware.Name(), Instance: instance, Owner: owner, Placement: placement},
-		order:      len(b.registrations),
-	})
+	descriptor := Descriptor{Stage: stage, Middleware: middleware.Name(), Instance: instance, Owner: owner, Placement: placement}
+	for _, existing := range b.registrations {
+		if existing.descriptor.Middleware != descriptor.Middleware || existing.descriptor.Instance != instance {
+			continue
+		}
+		if instance == "" {
+			b.fail(registrationError(fmt.Sprintf("the middleware '%s' is already registered; each middleware type may appear only once in a pipeline unless its instances are named", descriptor.Middleware)))
+		} else {
+			b.fail(registrationError(fmt.Sprintf("the middleware '%s' named '%s' is already registered; instance names must be unique within a type", descriptor.Middleware, instance)))
+		}
+		return b
+	}
+	b.registrations = append(b.registrations, &registration{middleware: middleware, descriptor: descriptor, order: len(b.registrations)})
 	return b
 }
 
-// Before 约束 middleware 在 other 之前；都按类型名。
+// Before 约束 middleware 在 other 之前（RFC-0004 规则 7）。两端都是中间件名：命名实例的实例名，或中间件的类型名
+// （该类型只登记了一个实例时）。middleware 是约束主体，声明时必须已登记；other 在排序时解析
 func (b *Builder) Before(middleware, other string) *Builder {
-	b.constraints = append(b.constraints, constraint{first: middleware, second: other})
+	return b.constrain(middleware, other, true)
+}
+
+// After 约束 middleware 在 other 之后；名字的解析同 Before
+func (b *Builder) After(middleware, other string) *Builder {
+	return b.constrain(middleware, other, false)
+}
+
+// constrain 声明一条约束：主体按名字解析成当前已登记的中间件，未登记或有歧义即登记错误
+func (b *Builder) constrain(middleware, other string, before bool) *Builder {
+	subject, err := b.find(middleware)
+	if err != nil {
+		b.fail(err)
+		return b
+	}
+	if subject == nil {
+		b.fail(registrationError(fmt.Sprintf("the middleware '%s' is not registered, so no ordering constraint can be declared for it", middleware)))
+		return b
+	}
+	b.constraints = append(b.constraints, constraint{subject: subject, target: other, before: before})
 	return b
 }
 
-// After 约束 middleware 在 other 之后；都按类型名。
-func (b *Builder) After(middleware, other string) *Builder {
-	b.constraints = append(b.constraints, constraint{first: other, second: middleware})
-	return b
+// find 按名字找登记：实例名等于名字，或类型名等于名字；没有返回 nil，命中多个（同类型的多个命名实例、实例名与别的类型名相同）是登记错误
+func (b *Builder) find(name string) (*registration, error) {
+	var found *registration
+	for _, registration := range b.registrations {
+		if registration.descriptor.Instance != name && registration.descriptor.Middleware != name {
+			continue
+		}
+		if found != nil {
+			return nil, registrationError(fmt.Sprintf("the middleware name '%s' matches several registrations, so ordering constraints by name are ambiguous for it", name))
+		}
+		found = registration
+	}
+	return found, nil
+}
+
+// fail 记下第一个登记错误
+func (b *Builder) fail(err error) {
+	if b.err == nil {
+		b.err = err
+	}
 }
 
 // Describe 返回排序后的中间件描述。
@@ -199,28 +247,28 @@ func (b *Builder) Build(terminal Step) (Step, error) {
 
 // sorted 按规则排序：先阶段；阶段内先 Placement，再归属，再登记顺序，最后按约束做稳定拓扑排序。
 func (b *Builder) sorted() ([]*registration, error) {
-	if err := b.checkDuplicates(); err != nil {
-		return nil, err
+	if b.err != nil {
+		return nil, b.err
 	}
-	byType := map[string][]*registration{}
-	for _, registration := range b.registrations {
-		byType[registration.descriptor.Middleware] = append(byType[registration.descriptor.Middleware], registration)
-	}
-	// 约束按类型名引用：未注册、有多个实例、跨阶段都是登记错误
+	// 约束目标在排序时按名字解析：未登记、有歧义、跨阶段都是登记错误
 	resolved := make([][2]*registration, 0, len(b.constraints))
 	for _, constraint := range b.constraints {
-		first, err := b.single(byType, constraint.first)
+		target, err := b.find(constraint.target)
 		if err != nil {
 			return nil, err
 		}
-		second, err := b.single(byType, constraint.second)
-		if err != nil {
-			return nil, err
+		subject := constraint.subject.descriptor
+		if target == nil {
+			return nil, registrationError(fmt.Sprintf("the ordering constraint of the middleware '%s' references the unregistered middleware '%s'", subject.Display(), constraint.target))
 		}
-		if first.descriptor.Stage != second.descriptor.Stage {
-			return nil, registrationError(fmt.Sprintf("the ordering constraint between '%s' and '%s' crosses stages", constraint.first, constraint.second))
+		if target.descriptor.Stage != subject.Stage {
+			return nil, registrationError(fmt.Sprintf("the middleware '%s' (stage '%s') and '%s' (stage '%s') are not in the same stage, so no relative order can be declared between them", subject.Display(), subject.Stage, constraint.target, target.descriptor.Stage))
 		}
-		resolved = append(resolved, [2]*registration{first, second})
+		if constraint.before {
+			resolved = append(resolved, [2]*registration{constraint.subject, target})
+		} else {
+			resolved = append(resolved, [2]*registration{target, constraint.subject})
+		}
 	}
 
 	var result []*registration
@@ -248,32 +296,6 @@ func (b *Builder) sorted() ([]*registration, error) {
 		result = append(result, ordered...)
 	}
 	return result, nil
-}
-
-// checkDuplicates 核对同一类型的默认实例只登记一次、命名实例的名字在类型内唯一。
-func (b *Builder) checkDuplicates() error {
-	seen := map[string]bool{}
-	for _, registration := range b.registrations {
-		key := registration.descriptor.Middleware + "\x00" + registration.descriptor.Instance
-		if seen[key] {
-			return registrationError(fmt.Sprintf("the middleware '%s' is registered more than once", registration.descriptor.Display()))
-		}
-		seen[key] = true
-	}
-	return nil
-}
-
-// single 按类型名取唯一的登记；没有或有多个实例都是登记错误。
-func (b *Builder) single(byType map[string][]*registration, name string) (*registration, error) {
-	registrations := byType[name]
-	switch len(registrations) {
-	case 0:
-		return nil, registrationError(fmt.Sprintf("the ordering constraint references the unregistered middleware '%s'", name))
-	case 1:
-		return registrations[0], nil
-	default:
-		return nil, registrationError(fmt.Sprintf("the middleware '%s' has several named instances; ordering constraints by type are ambiguous", name))
-	}
 }
 
 // topologicalSort 在基础顺序上应用约束做稳定拓扑排序（Kahn，每次取基础顺序最靠前的无前驱节点）。

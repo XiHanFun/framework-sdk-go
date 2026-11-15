@@ -146,3 +146,72 @@ func errorCode(err error) string {
 	}
 	return ""
 }
+
+// TestConstraintsByInstanceName 核对 RFC-0004 规则 7：约束两端可以是命名实例的实例名，也可以是只登记了一个实例的类型名
+func TestConstraintsByInstanceName(t *testing.T) {
+	builder := pipeline.NewBuilder().
+		UseNamedInstance("guard-a", pipeline.Func("Guard", nil), primitives.Observe, pipeline.End, "app").
+		UseNamedInstance("guard-b", pipeline.Func("Guard", nil), primitives.Observe, pipeline.End, "app").
+		UseAt(pipeline.Func("Audit", nil), primitives.Observe, pipeline.End, "app").
+		UseNamedInstance("only", pipeline.Func("Single", nil), primitives.Observe, pipeline.End, "app").
+		Before("guard-b", "guard-a").
+		After("guard-a", "Audit").
+		Before("Single", "guard-b")
+	dump, err := builder.Dump()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 基准次序 guard-a、guard-b、Audit、Single；稳定拓扑排序每次取基准次序最靠前、没有前驱的那个
+	want := "observe      Audit\nobserve      Single[only]\nobserve      Guard[guard-b]\nobserve      Guard[guard-a]\n"
+	if dump != want {
+		t.Errorf("dump:\n%s\nwant:\n%s", dump, want)
+	}
+}
+
+// TestConstraintSubjectMustBeRegisteredWhenDeclared 核对约束主体在声明时必须已登记，目标在排序时解析、可以晚于约束登记
+func TestConstraintSubjectMustBeRegisteredWhenDeclared(t *testing.T) {
+	late := pipeline.NewBuilder().
+		Before("A", "B").
+		UseAt(pipeline.Func("A", nil), primitives.Validate, pipeline.End, "app").
+		UseAt(pipeline.Func("B", nil), primitives.Validate, pipeline.End, "app")
+	assertCode(t, late, pipeline.ErrorCodeRegistration)
+
+	targetLater := pipeline.NewBuilder().
+		UseAt(pipeline.Func("B", nil), primitives.Validate, pipeline.End, "app").
+		UseAt(pipeline.Func("A", nil), primitives.Validate, pipeline.End, "app").
+		After("B", "C").
+		UseAt(pipeline.Func("C", nil), primitives.Validate, pipeline.End, "app")
+	descriptors, err := targetLater.Describe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if descriptors[0].Middleware != "A" || descriptors[1].Middleware != "C" || descriptors[2].Middleware != "B" {
+		t.Errorf("order %v", descriptors)
+	}
+}
+
+// TestAmbiguousNamesAreRejected 核对名字命中多个登记即 KERNEL_PIPELINE_003：同类型的多个实例按类型名引用，或实例名与别的类型名相同
+func TestAmbiguousNamesAreRejected(t *testing.T) {
+	two := func() *pipeline.Builder {
+		return pipeline.NewBuilder().
+			UseNamedInstance("guard-a", pipeline.Func("Guard", nil), primitives.Observe, pipeline.End, "app").
+			UseNamedInstance("guard-b", pipeline.Func("Guard", nil), primitives.Observe, pipeline.End, "app").
+			UseAt(pipeline.Func("Audit", nil), primitives.Observe, pipeline.End, "app")
+	}
+	assertCode(t, two().Before("Guard", "Audit"), pipeline.ErrorCodeRegistration)
+	assertCode(t, two().Before("Audit", "Guard"), pipeline.ErrorCodeRegistration)
+
+	collision := pipeline.NewBuilder().
+		UseNamedInstance("Audit", pipeline.Func("Guard", nil), primitives.Observe, pipeline.End, "app").
+		UseAt(pipeline.Func("Audit", nil), primitives.Observe, pipeline.End, "app").
+		UseAt(pipeline.Func("Trace", nil), primitives.Observe, pipeline.End, "app")
+	assertCode(t, collision.Before("Trace", "Audit"), pipeline.ErrorCodeRegistration)
+
+	duplicateInstance := pipeline.NewBuilder().
+		UseNamedInstance("guard-a", pipeline.Func("Guard", nil), primitives.Observe, pipeline.End, "app").
+		UseNamedInstance("guard-a", pipeline.Func("Guard", nil), primitives.Observe, pipeline.End, "xihan.other")
+	assertCode(t, duplicateInstance, pipeline.ErrorCodeRegistration)
+	if _, err := duplicateInstance.Build(func(*invocation.Context) primitives.Result[primitives.Unit] { return primitives.Success() }); err == nil {
+		t.Error("Build reports the registration error too")
+	}
+}
