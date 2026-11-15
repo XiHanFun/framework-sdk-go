@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/xihanfun/framework-sdk-go/invocation"
 	"github.com/xihanfun/framework-sdk-go/pipeline"
@@ -336,7 +337,7 @@ func (i *Invoker) Invoke(ctx *invocation.Context, request Request) Response {
 		}
 		return response.Outcome
 	}
-	outcome := i.step(begin(ctx, state))
+	outcome := i.run(ctx, state)
 	if !outcome.OK() {
 		return Response{Outcome: outcome}
 	}
@@ -365,7 +366,7 @@ func Invoke[Req, Res any](invoker *Invoker, ctx *invocation.Context, id string, 
 		produced = result.OK()
 		return result.Unit()
 	}
-	outcome := invoker.step(begin(ctx, state))
+	outcome := invoker.run(ctx, state)
 	if !outcome.OK() {
 		return primitives.Fail[Res](outcome.Err())
 	}
@@ -373,6 +374,20 @@ func Invoke[Req, Res any](invoker *Invoker, ctx *invocation.Context, id string, 
 		return primitives.Fail[Res](noResponse(id))
 	}
 	return result
+}
+
+// run 让一次调用经过管道，并承担 .NET DeadlineMiddleware 的归因（RFC-0004、ADR-0092）：调用开始时截止时间已过即
+// KERNEL_TIMEOUT_001（kernel.invocation.deadline_before_start），不进管道；下游写下 KERNEL_CANCELLED_001 而截止令牌
+// 已触发时改写为 KERNEL_TIMEOUT_001（kernel.invocation.deadline_exceeded），不论调用方是否也取消了
+func (i *Invoker) run(ctx *invocation.Context, state *call) primitives.Result[primitives.Unit] {
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return primitives.Fail[primitives.Unit](primitives.Timeout(invocation.ErrorCodeDeadlineExceeded, invocation.MessageDeadlineBeforeStart, nil))
+	}
+	outcome := i.step(begin(ctx, state))
+	if err := outcome.Err(); err != nil && err.Code == invocation.ErrorCodeCancelled && ctx.DeadlineExceeded() {
+		return primitives.Fail[primitives.Unit](primitives.Timeout(invocation.ErrorCodeDeadlineExceeded, invocation.MessageDeadlineExceeded, nil))
+	}
+	return outcome
 }
 
 // noResponse 是调用以成功结束、处理器却没有产出响应的错误（中间件以成功短路）

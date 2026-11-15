@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xihanfun/framework-sdk-go/primitives"
@@ -50,11 +51,18 @@ var traceParentPattern = regexp.MustCompile(`^([0-9a-f]{2})-([0-9a-f]{32})-([0-9
 type Context struct {
 	context.Context
 	deadline time.Time
+	expiry   *deadlineToken
 	traceID  string
 	spanID   string
 	sampled  bool
 	baggage  map[string]string
 	items    *items
+}
+
+// deadlineToken 是截止令牌（RFC-0004、ADR-0092）：到达截止时间时由定时器置位，调用方的取消不停它。
+// 嵌入的 context.Context 先被取消时 Err() 停在 Canceled，截止令牌照样在截止时间置位，超时与取消的归因只看它
+type deadlineToken struct {
+	fired atomic.Bool
 }
 
 // items 是派生上下文共享的请求作用域对象袋。
@@ -122,7 +130,14 @@ func New(parent context.Context, options ...Option) *Context {
 		// 截止时间与取消并存：到达截止时间时取消令牌触发（RFC-0003 规则 1）
 		ctx, cancel := context.WithDeadline(parent, c.deadline)
 		c.Context = ctx
-		context.AfterFunc(parent, cancel)
+		expiry, deadline := &deadlineToken{}, c.deadline
+		c.expiry = expiry
+		// 截止时间先到时嵌入的上下文以 DeadlineExceeded 结束，令牌不必另起定时器；调用方先取消时 WithDeadline 的定时器随之停止，
+		// 这里为剩下的时间另起一个，让截止令牌照样在截止时间置位
+		context.AfterFunc(parent, func() {
+			cancel()
+			time.AfterFunc(time.Until(deadline), func() { expiry.fired.Store(true) })
+		})
 	}
 	return c
 }
@@ -239,10 +254,27 @@ func (c *Context) Get(key any) (any, bool) {
 	return value, ok
 }
 
-// Cancellation 把取消与超时翻译成原语层错误：超过截止时间为 KERNEL_TIMEOUT_001，外部取消为 KERNEL_CANCELLED_001；
-// 未取消为 nil。嵌入的 Err() 仍是 context.Context 的原始错误。
+// Cancellation 把取消与超时翻译成原语层错误；未取消为 nil。归因只看截止令牌（RFC-0004、ADR-0092）：截止令牌已触发即
+// KERNEL_TIMEOUT_001，即使调用方也取消了、而且取消在先；截止令牌没有触发时是 KERNEL_CANCELLED_001。不按谁先发生判断，
+// 也不读时钟。嵌入的 Err() 仍是 context.Context 的原始错误（先触发者胜）
 func (c *Context) Cancellation() *primitives.Error {
-	return FromContextError(c.Context.Err())
+	err := c.Context.Err()
+	if err == nil {
+		return nil
+	}
+	if c.DeadlineExceeded() {
+		return primitives.Timeout(ErrorCodeDeadlineExceeded, MessageDeadlineExceeded, nil)
+	}
+	return FromContextError(err)
+}
+
+// DeadlineExceeded 判断截止令牌是否已触发：截止时间已到（由定时器而不是时钟判断），不论调用方是否也取消了；
+// 没有自己的截止时间时看嵌入的 context.Context 是否以 DeadlineExceeded 结束
+func (c *Context) DeadlineExceeded() bool {
+	if c.expiry != nil && c.expiry.fired.Load() {
+		return true
+	}
+	return errors.Is(c.Context.Err(), context.DeadlineExceeded)
 }
 
 // FromContextError 把 context 的错误翻译成原语层错误；nil 与其他错误返回 nil。
