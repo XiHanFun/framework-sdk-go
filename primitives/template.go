@@ -139,8 +139,7 @@ func FormatArgument(value any, format string) string {
 		if precision < 0 {
 			precision = 2
 		}
-		if rational, ok := rationalOf(value); ok {
-			text := formatFixed(rational, precision)
+		if text, ok := fixedOf(value, precision); ok {
 			if specifier == 'N' {
 				text = groupThousands(text)
 			}
@@ -186,7 +185,26 @@ func padDigits(integer *big.Int, base, precision int, upper bool) string {
 	return digits
 }
 
-// formatFixed 写 precision 位小数的定点小数：按精确值舍入，正好一半时取偶，负号在前（舍入成零的负数写 -0.00，与 strconv 一致）
+// fixedOf 写 precision 位小数的定点小数，按值的精确十进制展开舍入、正好一半时取偶：有限浮点交给 strconv.FormatFloat，
+// 它按二进制值的精确展开舍入，与 .NET 的格式化一致（负零与舍入成零的负数写 -0.00）；整数与 json.Number 按精确的有理数舍入。
+// NaN、无穷与非数值返回假
+func fixedOf(value any, precision int) (string, bool) {
+	reflected := reflect.ValueOf(value)
+	if kind := reflected.Kind(); kind == reflect.Float32 || kind == reflect.Float64 {
+		float := reflected.Float()
+		if math.IsInf(float, 0) || math.IsNaN(float) {
+			return "", false
+		}
+		return strconv.FormatFloat(float, 'f', precision, 64), true
+	}
+	rational, ok := rationalOf(value)
+	if !ok {
+		return "", false
+	}
+	return formatFixed(rational, precision), true
+}
+
+// formatFixed 写有理数的 precision 位定点小数：按精确值舍入，正好一半时取偶，负号在前（舍入成零的负数写 -0.00，与 strconv 一致）
 func formatFixed(value *big.Rat, precision int) string {
 	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(precision)), nil)
 	numerator := new(big.Int).Mul(new(big.Int).Abs(value.Num()), scale)
@@ -261,7 +279,7 @@ func integerOf(value any) (*big.Int, bool) {
 	return nil, false
 }
 
-// rationalOf 取数值的精确有理数：整数、有限浮点（精确的二进制值）与 json.Number（精确的十进制值）
+// rationalOf 取整数与 json.Number 的精确有理数（json.Number 是精确的十进制值）；浮点由 fixedOf 交给 strconv
 func rationalOf(value any) (*big.Rat, bool) {
 	if number, ok := value.(json.Number); ok {
 		return new(big.Rat).SetString(number.String())
@@ -272,12 +290,6 @@ func rationalOf(value any) (*big.Rat, bool) {
 		return new(big.Rat).SetInt64(reflected.Int()), true
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		return new(big.Rat).SetUint64(reflected.Uint()), true
-	case reflect.Float32, reflect.Float64:
-		float := reflected.Float()
-		if math.IsInf(float, 0) || math.IsNaN(float) {
-			return nil, false
-		}
-		return new(big.Rat).SetFloat64(float), true
 	}
 	return nil, false
 }

@@ -3,7 +3,9 @@ package primitives_test
 import (
 	"encoding/json"
 	"math"
+	"math/rand"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"github.com/xihanfun/framework-sdk-go/primitives"
@@ -164,5 +166,34 @@ func TestCatalogResolvesStrictlyAndIgnoresLocaleCase(t *testing.T) {
 	}
 	if got := primitives.NotFound("ORDERS_NOTFOUND_001", "orders.missing", map[string]any{"other": 1}).Message(); got != "orders.missing (other=1)" {
 		t.Errorf("a template that cannot be filled falls back to Describe: %q", got)
+	}
+}
+
+// TestFixedFloatsRoundLikeStrconv 核对 F 与 N 写浮点时与 strconv.FormatFloat(x, 'f', n, 64) 一致：按二进制值的精确展开舍入、
+// 正好一半取偶，与 .NET 10 的实测一致；负零写 -0.00
+func TestFixedFloatsRoundLikeStrconv(t *testing.T) {
+	measured := []struct {
+		value  float64
+		format string
+		want   string
+	}{
+		{0.125, "F2", "0.12"}, {0.375, "F2", "0.38"}, {2.5, "F0", "2"}, {-2.5, "F0", "-2"}, {3.5, "F0", "4"},
+		{1234.5, "N0", "1,234"}, {2.675, "F2", "2.67"}, {math.Copysign(0, -1), "F2", "-0.00"}, {math.Copysign(0, -1), "N1", "-0.0"},
+	}
+	for _, c := range measured {
+		if got := primitives.FormatArgument(c.value, c.format); got != c.want {
+			t.Errorf("FormatArgument(%v, %q) = %q, want %q", c.value, c.format, got, c.want)
+		}
+	}
+	random := rand.New(rand.NewSource(1))
+	for index := 0; index < 20000; index++ {
+		value := (random.Float64() - 0.5) * math.Pow(10, float64(random.Intn(16)-4))
+		if index%4 == 0 {
+			value = math.Round(value*8) / 8 // 正好一半的二进制值
+		}
+		precision := random.Intn(8)
+		if got, want := primitives.FormatArgument(value, "F"+strconv.Itoa(precision)), strconv.FormatFloat(value, 'f', precision, 64); got != want {
+			t.Fatalf("FormatArgument(%v, F%d) = %q, strconv %q", value, precision, got, want)
+		}
 	}
 }
