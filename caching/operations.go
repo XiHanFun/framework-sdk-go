@@ -2,6 +2,7 @@ package caching
 
 import (
 	"encoding/base64"
+	"strconv"
 	"time"
 
 	"github.com/xihanfun/framework-sdk-go/invocation"
@@ -140,7 +141,7 @@ func (o *operations) get(ctx *invocation.Context, request GetRequest) primitives
 
 // set 实现 cache-entries.set。
 func (o *operations) set(ctx *invocation.Context, request SetRequest) primitives.Result[Empty] {
-	value, options, err := decodeSet(request)
+	value, options, err := decodeSet(OperationSet, "$", request)
 	if err != nil {
 		return primitives.Fail[Empty](err)
 	}
@@ -152,7 +153,7 @@ func (o *operations) set(ctx *invocation.Context, request SetRequest) primitives
 
 // tryAdd 实现 cache-entries.try-add。
 func (o *operations) tryAdd(ctx *invocation.Context, request SetRequest) primitives.Result[AddedResponse] {
-	value, options, err := decodeSet(request)
+	value, options, err := decodeSet(OperationTryAdd, "$", request)
 	if err != nil {
 		return primitives.Fail[AddedResponse](err)
 	}
@@ -174,7 +175,7 @@ func (o *operations) remove(ctx *invocation.Context, request RemoveRequest) prim
 
 // tryRemove 实现 cache-entries.try-remove。
 func (o *operations) tryRemove(ctx *invocation.Context, request TryRemoveRequest) primitives.Result[RemovedResponse] {
-	expected, err := decodeValue(request.Expected)
+	expected, err := decodeValue(OperationTryRemove, "$.expected", request.Expected)
 	if err != nil {
 		return primitives.Fail[RemovedResponse](err)
 	}
@@ -193,7 +194,7 @@ func (o *operations) tryRefresh(ctx *invocation.Context, request TryRefreshReque
 	if request.TTLMs == nil || *request.TTLMs <= 0 {
 		return primitives.Fail[RefreshedResponse](primitives.Validation(ErrorCodeInvalidOptions, MessageInvalidOptions, map[string]any{"reason": "ttlMs is required and must be a positive integer"}))
 	}
-	expected, err := decodeValue(request.Expected)
+	expected, err := decodeValue(OperationTryRefresh, "$.expected", request.Expected)
 	if err != nil {
 		return primitives.Fail[RefreshedResponse](err)
 	}
@@ -229,7 +230,7 @@ func (o *operations) getMany(ctx *invocation.Context, request KeysRequest) primi
 func (o *operations) setMany(ctx *invocation.Context, request SetManyRequest) primitives.Result[Empty] {
 	entries := make([]Entry, 0, len(request.Entries))
 	for index, item := range request.Entries {
-		value, options, err := decodeSet(item)
+		value, options, err := decodeSet(OperationSetMany, "$.entries["+strconv.Itoa(index)+"]", item)
 		if err != nil {
 			return primitives.Fail[Empty](withIndex(err, index))
 		}
@@ -256,8 +257,8 @@ func (o *operations) removeMany(ctx *invocation.Context, request KeysRequest) pr
 	return primitives.Ok(RemovedManyResponse{Removed: removed})
 }
 
-// decodeSet 解码写入请求：键与选项按子系统规则校验（插件侧也必须校验），值是 base64。
-func decodeSet(request SetRequest) ([]byte, Options, *primitives.Error) {
+// decodeSet 解码写入请求：键与选项按子系统规则校验（插件侧也必须校验），值是 base64；path 是这个请求在载荷里的 JSON 路径
+func decodeSet(id, path string, request SetRequest) ([]byte, Options, *primitives.Error) {
 	if err := ValidateKey(request.Key); err != nil {
 		return nil, Options{}, err
 	}
@@ -277,18 +278,18 @@ func decodeSet(request SetRequest) ([]byte, Options, *primitives.Error) {
 	if err := options.Validate(); err != nil {
 		return nil, Options{}, err
 	}
-	value, err := decodeValue(request.Value)
+	value, err := decodeValue(id, path+".value", request.Value)
 	if err != nil {
 		return nil, Options{}, err
 	}
 	return value, options, nil
 }
 
-// decodeValue 解码 base64 的值；不合法按载荷不合法。
-func decodeValue(encoded string) ([]byte, *primitives.Error) {
+// decodeValue 解码 base64 的值；不合法按载荷不合法（KERNEL_VALIDATION_001），reason 是值所在的 JSON 路径
+func decodeValue(id, path, encoded string) ([]byte, *primitives.Error) {
 	value, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return nil, primitives.Validation(operation.ErrorCodeInvalidPayload, operation.MessageInvalidPayload, map[string]any{"reason": "the value is not standard base64"})
+		return nil, operation.InvalidPayload(id, path)
 	}
 	return value, nil
 }

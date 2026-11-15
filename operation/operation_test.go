@@ -100,10 +100,13 @@ func TestRegistryRejectsDuplicatesAndBadIDs(t *testing.T) {
 	if err := operation.Add(registry, operation.Contract{ID: "orders.create"}, handler, nil, ""); err != nil {
 		t.Fatal(err)
 	}
-	err := operation.Add(registry, operation.Contract{ID: "orders.create"}, handler, nil, "")
-	var framework *primitives.FrameworkError
-	if !errors.As(err, &framework) || framework.Code != operation.ErrorCodeDuplicate {
+	err := operation.Add(registry, operation.Contract{ID: "orders.create"}, handler, nil, "xihan.orders.other")
+	var duplicate *primitives.Error
+	if !errors.As(err, &duplicate) || duplicate.Code != operation.ErrorCodeDuplicate || duplicate.MessageKey != operation.MessageDuplicate || duplicate.Details["id"] != "orders.create" || duplicate.Details["owner"] != pipeline.AppOwner {
 		t.Errorf("duplicate %v", err)
+	}
+	if duplicate != nil && duplicate.Message() != "Operation 'orders.create' is already registered by 'app'." {
+		t.Errorf("duplicate message %q", duplicate.Message())
 	}
 	if list := registry.List(); len(list) != 1 || list[0].Owner != pipeline.AppOwner {
 		t.Errorf("list %v", list)

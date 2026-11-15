@@ -270,9 +270,20 @@ func TestOperationsReplayTheVectors(t *testing.T) {
 			t.Errorf("options %s: %v", options, response.Outcome)
 		}
 	}
-	bad := invoker.Invoke(invocation.Background(), operation.Request{ID: caching.OperationSet, Payload: []byte(`{"key":"k","value":"%%%"}`)})
-	if bad.Outcome.OK() || bad.Outcome.Err().Code != operation.ErrorCodeInvalidPayload {
-		t.Errorf("bad base64: %v", bad.Outcome)
+	// 值不是合法 base64 按载荷不合法：参数 {id, reason}，reason 是值所在的 JSON 路径（RFC-0011 规则 2）
+	badValues := map[string][2]string{
+		caching.OperationSet:        {`{"key":"k","value":"%%%"}`, "$.value"},
+		caching.OperationTryAdd:     {`{"key":"k","value":"%%%"}`, "$.value"},
+		caching.OperationTryRemove:  {`{"key":"k","expected":"%%%"}`, "$.expected"},
+		caching.OperationTryRefresh: {`{"key":"k","expected":"%%%","ttlMs":100}`, "$.expected"},
+		caching.OperationSetMany:    {`{"entries":[{"key":"a","value":""},{"key":"b","value":"%%%"}]}`, "$.entries[1].value"},
+	}
+	for id, c := range badValues {
+		bad := invoker.Invoke(invocation.Background(), operation.Request{ID: id, Payload: []byte(c[0])})
+		err := bad.Outcome.Err()
+		if bad.Outcome.OK() || err.Code != operation.ErrorCodeInvalidPayload || err.MessageKey != operation.MessageInvalidPayload || err.Details["id"] != id || err.Details["reason"] != c[1] {
+			t.Errorf("bad base64 in %s: %v %v", id, bad.Outcome, err.Details)
+		}
 	}
 
 	// try-refresh 的 ttlMs 必填且为正；键先于选项、选项先于期望值校验

@@ -23,13 +23,24 @@ const (
 	ErrorCodeCancelled = "KERNEL_CANCELLED_001"
 )
 
-// 与上下文有关的消息键。
+// 与上下文有关的消息键（与 .NET KernelMessages 一致，都没有参数）
 const (
-	// MessageDeadlineExceeded 是超时的消息键。
+	// MessageDeadlineExceeded 是超时的消息键
 	MessageDeadlineExceeded = "kernel.invocation.deadline_exceeded"
-	// MessageCancelled 是取消的消息键。
+	// MessageDeadlineBeforeStart 是调用开始时截止时间已过的消息键
+	MessageDeadlineBeforeStart = "kernel.invocation.deadline_before_start"
+	// MessageCancelled 是取消的消息键
 	MessageCancelled = "kernel.invocation.cancelled"
 )
+
+// 这些键的 en-US 默认模板，逐字照 .NET XiHan.Framework.Kernel/Localization/en-US.json
+func init() {
+	primitives.RegisterDefaultTemplates(map[string]string{
+		MessageDeadlineExceeded:    "The invocation exceeded its deadline.",
+		MessageDeadlineBeforeStart: "The invocation exceeded its deadline before it started.",
+		MessageCancelled:           "The invocation was canceled.",
+	})
+}
 
 // traceParentPattern 是 W3C traceparent：version-traceid-spanid-flags。
 var traceParentPattern = regexp.MustCompile(`^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$`)

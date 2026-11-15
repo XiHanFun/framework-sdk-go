@@ -99,7 +99,7 @@ func (e *Error) Kind() string { return ErrorCodeKind(e.Code) }
 // Domain 返回错误码的领域段。
 func (e *Error) Domain() string { return ErrorCodeDomain(e.Code) }
 
-// Message 返回面向人的消息：已解析文案；否则按进程默认区域解析消息键；再否则"键 (参数)"。
+// Message 返回面向人的消息：已解析文案；否则按进程默认区域解析消息键，解析不出时用登记的 en-US 默认模板；再否则"键 (参数)"
 func (e *Error) Message() string {
 	if e.Text != "" {
 		return e.Text

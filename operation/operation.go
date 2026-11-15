@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"sync"
@@ -28,14 +29,43 @@ const (
 	ErrorCodeDuplicate = "KERNEL_OPERATION_001"
 	// ErrorCodeRegistryFull：操作登记表已满（配置期）。
 	ErrorCodeRegistryFull = "KERNEL_OPERATION_002"
+	// ErrorCodeUnexpected：调用以成功结束却没有产出响应，或响应无法编码
+	ErrorCodeUnexpected = "KERNEL_UNEXPECTED_001"
 )
 
-// 操作错误的消息键。
+// 操作错误的消息键与参数，与 .NET KernelMessages 一致
 const (
-	MessageNotFound       = "kernel.operation.unknown"
-	MessageInvalidPayload = "kernel.operation.payload_invalid"
-	MessageTypeMismatch   = "kernel.operation.type_mismatch"
+	// MessageNotFound：操作未登记，参数 {id}
+	MessageNotFound = "kernel.operation.unknown"
+	// MessageInvalidPayload：载荷不合法，参数 {id, reason}；reason 只写出错位置的 JSON 路径（RFC-0011 规则 2）
+	MessageInvalidPayload = "kernel.operation.invalid_payload"
+	// MessageTypeMismatch：类型化调用的类型与登记不符，参数 {id, expected, actual}，值是「请求类型 -> 响应类型」
+	MessageTypeMismatch = "kernel.operation.type_mismatch"
+	// MessageNoResponse：中间件以成功短路、处理器没有产出响应，参数 {id}
+	MessageNoResponse = "kernel.operation.no_response"
+	// MessageDuplicate：重复登记，参数 {id, owner}，owner 是已登记者的归属
+	MessageDuplicate = "kernel.operation.duplicate"
+	// MessageRegistryFull：登记表已满，参数 {capacity}
+	MessageRegistryFull = "kernel.operation.registry_full"
 )
+
+// 这些键的 en-US 默认模板，逐字照 .NET XiHan.Framework.Kernel/Localization/en-US.json
+func init() {
+	primitives.RegisterDefaultTemplates(map[string]string{
+		MessageNotFound:       "Operation '{id}' is not registered.",
+		MessageInvalidPayload: "The payload of operation '{id}' is not valid: {reason}",
+		MessageTypeMismatch:   "Operation '{id}' handles '{expected}', but '{actual}' was supplied.",
+		MessageNoResponse:     "Operation '{id}' completed without producing a response.",
+		MessageDuplicate:      "Operation '{id}' is already registered by '{owner}'.",
+		MessageRegistryFull:   "The operation registry has reached its capacity of {capacity}.",
+	})
+}
+
+// InvalidPayload 创建载荷不合法的错误（KERNEL_VALIDATION_001）：reason 是出错位置的 JSON 路径（如 $.quantity、$），
+// 不带目标类型名（RFC-0011 规则 2）；JSON null 的载荷 reason 是 the payload is null
+func InvalidPayload(id, reason string) *primitives.Error {
+	return primitives.Validation(ErrorCodeInvalidPayload, MessageInvalidPayload, map[string]any{"id": id, "reason": reason})
+}
 
 // Capacity 是登记表的容量。
 const Capacity = 10000
@@ -103,6 +133,7 @@ type Descriptor struct {
 	// Owner 是归属（清单 ID 或 app）。
 	Owner   string
 	handler any
+	types   string
 	execute func(ctx *invocation.Context, payload []byte) Response
 }
 
@@ -120,7 +151,9 @@ type Registry struct {
 // NewRegistry 创建空的登记表。
 func NewRegistry() *Registry { return &Registry{descriptors: map[string]*Descriptor{}} }
 
-// Add 登记一个操作；ID 不合法是 PRIMITIVES_VALIDATION_001，重复是 KERNEL_OPERATION_001，满了是 KERNEL_OPERATION_002。
+// Add 登记一个操作。ID 不合法、permission 与 policy 同时给出是编程错误，返回 FrameworkError（PRIMITIVES_VALIDATION_001）；
+// 重复登记与登记表已满是登记失败，返回 *primitives.Error：KERNEL_OPERATION_001（kernel.operation.duplicate，参数 {id, owner}）
+// 与 KERNEL_OPERATION_002（kernel.operation.registry_full，参数 {capacity}），与 .NET OperationRegistry 一致
 func Add[Req, Res any](registry *Registry, contract Contract, handler Handler[Req, Res], schema *Schema, owner string) error {
 	if !IsID(contract.ID) {
 		return &primitives.FrameworkError{Code: primitives.ErrorCodeInvalidArgument, Message: fmt.Sprintf("The operation ID '%s' must match <resource>.<verb>.", contract.ID)}
@@ -131,9 +164,9 @@ func Add[Req, Res any](registry *Registry, contract Contract, handler Handler[Re
 	if owner == "" {
 		owner = pipeline.AppOwner
 	}
-	descriptor := &Descriptor{Contract: contract, Schema: schema, Owner: owner, handler: handler}
+	descriptor := &Descriptor{Contract: contract, Schema: schema, Owner: owner, handler: handler, types: signature[Req, Res]()}
 	descriptor.execute = func(ctx *invocation.Context, payload []byte) Response {
-		request, err := decode[Req](payload)
+		request, err := decode[Req](contract.ID, payload)
 		if err != nil {
 			return Response{Outcome: primitives.Fail[primitives.Unit](err)}
 		}
@@ -144,21 +177,34 @@ func Add[Req, Res any](registry *Registry, contract Contract, handler Handler[Re
 		}
 		encoded, marshalErr := json.Marshal(value)
 		if marshalErr != nil {
-			return Response{Outcome: primitives.Fail[primitives.Unit](primitives.Literal("KERNEL_UNEXPECTED_001", "The response of '"+contract.ID+"' could not be encoded: "+marshalErr.Error(), nil, nil))}
+			return Response{Outcome: primitives.Fail[primitives.Unit](primitives.Literal(ErrorCodeUnexpected, "The response of '"+contract.ID+"' could not be encoded: "+marshalErr.Error(), nil, nil))}
 		}
 		return Response{Outcome: primitives.Success(), Payload: encoded}
 	}
 
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
-	if _, exists := registry.descriptors[contract.ID]; exists {
-		return &primitives.FrameworkError{Code: ErrorCodeDuplicate, Message: fmt.Sprintf("The operation '%s' is already registered.", contract.ID)}
+	if existing, exists := registry.descriptors[contract.ID]; exists {
+		return primitives.NewError(ErrorCodeDuplicate, MessageDuplicate, map[string]any{"id": contract.ID, "owner": existing.Owner}, nil)
 	}
 	if len(registry.descriptors) >= Capacity {
-		return &primitives.FrameworkError{Code: ErrorCodeRegistryFull, Message: fmt.Sprintf("The operation registry is full (%d operations).", Capacity)}
+		return primitives.NewError(ErrorCodeRegistryFull, MessageRegistryFull, map[string]any{"capacity": Capacity}, nil)
 	}
 	registry.descriptors[contract.ID] = descriptor
 	return nil
+}
+
+// signature 返回「请求类型 -> 响应类型」，类型化调用不符时写进 expected / actual（与 .NET 一样用类型的短名）
+func signature[Req, Res any]() string {
+	return typeName(reflect.TypeFor[Req]()) + " -> " + typeName(reflect.TypeFor[Res]())
+}
+
+// typeName 返回类型的短名；没有名字的类型（切片、映射、匿名结构体、指针）用它的文本形式
+func typeName(t reflect.Type) string {
+	if t.Name() != "" {
+		return t.Name()
+	}
+	return t.String()
 }
 
 // Get 按 ID 取描述。
@@ -181,18 +227,18 @@ func (r *Registry) List() []*Descriptor {
 	return descriptors
 }
 
-// decode 解码请求载荷：空等价于 {}；非 JSON、null 或类型不匹配为 KERNEL_VALIDATION_001。
-func decode[Req any](payload []byte) (Req, *primitives.Error) {
+// decode 解码请求载荷：空等价于 {}；非 JSON、null 或类型不匹配为 KERNEL_VALIDATION_001，reason 只写出错位置的 JSON 路径
+func decode[Req any](id string, payload []byte) (Req, *primitives.Error) {
 	var request Req
 	trimmed := bytes.TrimSpace(payload)
 	if len(trimmed) == 0 {
 		trimmed = []byte("{}")
 	}
 	if bytes.Equal(trimmed, []byte("null")) {
-		return request, primitives.Validation(ErrorCodeInvalidPayload, MessageInvalidPayload, map[string]any{"reason": "the payload is null"})
+		return request, InvalidPayload(id, "the payload is null")
 	}
 	if err := json.Unmarshal(trimmed, &request); err != nil {
-		return request, primitives.Validation(ErrorCodeInvalidPayload, MessageInvalidPayload, map[string]any{"reason": err.Error()})
+		return request, InvalidPayload(id, payloadPath(trimmed, err))
 	}
 	return request, nil
 }
@@ -292,10 +338,14 @@ func (i *Invoker) Invoke(ctx *invocation.Context, request Request) Response {
 	if !outcome.OK() {
 		return Response{Outcome: outcome}
 	}
+	if !state.responded {
+		return Response{Outcome: primitives.Fail[primitives.Unit](noResponse(request.ID))}
+	}
 	return Response{Outcome: outcome, Payload: state.response}
 }
 
-// Invoke 是类型化入口：不经 JSON，直接以请求对象执行；类型与登记不符返回 KERNEL_VALIDATION_002。
+// Invoke 是类型化入口：不经 JSON，直接以请求对象执行；类型与登记不符返回 KERNEL_VALIDATION_002，
+// 中间件以成功短路、处理器没有产出响应时返回 KERNEL_UNEXPECTED_001（kernel.operation.no_response）
 func Invoke[Req, Res any](invoker *Invoker, ctx *invocation.Context, id string, request Req) primitives.Result[Res] {
 	descriptor, ok := invoker.registry.Get(id)
 	if !ok {
@@ -303,19 +353,29 @@ func Invoke[Req, Res any](invoker *Invoker, ctx *invocation.Context, id string, 
 	}
 	handler, ok := descriptor.handler.(Handler[Req, Res])
 	if !ok {
-		return primitives.Fail[Res](primitives.Validation(ErrorCodeTypeMismatch, MessageTypeMismatch, map[string]any{"id": id}))
+		return primitives.Fail[Res](primitives.Validation(ErrorCodeTypeMismatch, MessageTypeMismatch, map[string]any{"id": id, "expected": descriptor.types, "actual": signature[Req, Res]()}))
 	}
 	var result primitives.Result[Res]
+	produced := false
 	state := &call{descriptor: descriptor, request: Request{ID: id}}
 	state.terminal = func(ctx *invocation.Context) primitives.Result[primitives.Unit] {
 		result = handler.Handle(ctx, request)
+		produced = result.OK()
 		return result.Unit()
 	}
 	outcome := invoker.step(begin(ctx, state))
 	if !outcome.OK() {
 		return primitives.Fail[Res](outcome.Err())
 	}
+	if !produced {
+		return primitives.Fail[Res](noResponse(id))
+	}
 	return result
+}
+
+// noResponse 是调用以成功结束、处理器却没有产出响应的错误（中间件以成功短路）
+func noResponse(id string) *primitives.Error {
+	return primitives.Unexpected(ErrorCodeUnexpected, MessageNoResponse, map[string]any{"id": id}, nil)
 }
 
 // dispatch 是管道的终点：执行这次调用自己的终点（XGI 调用解码、执行、编码，类型化调用直接调处理器）

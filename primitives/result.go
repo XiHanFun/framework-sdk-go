@@ -35,13 +35,13 @@ func (r Result[T]) OK() bool { return r.ok }
 // Failed 判断是否失败；未初始化也算失败。
 func (r Result[T]) Failed() bool { return !r.ok }
 
-// Err 返回失败原因；成功时为 nil，未初始化时为 PRIMITIVES_VALIDATION_002。
+// Err 返回失败原因；成功时为 nil，未初始化时为 PRIMITIVES_VALIDATION_002（primitives.result.uninitialized）
 func (r Result[T]) Err() *Error {
 	if r.ok {
 		return nil
 	}
 	if r.err == nil {
-		return Literal(ErrorCodeUninitializedResult, "The result has not been initialized.", nil, nil)
+		return Validation(ErrorCodeUninitializedResult, MessageUninitializedResult, nil)
 	}
 	return r.err
 }

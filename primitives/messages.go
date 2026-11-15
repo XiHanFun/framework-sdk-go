@@ -93,15 +93,56 @@ func DefaultLocale() string {
 	return defaultLocale
 }
 
-// ResolveMessage 用进程默认解析器解析消息键；没有解析器或没有该键时返回假。
+// ResolveMessage 解析消息键：先用进程默认解析器，解析不出时用 SDK 各包登记的 en-US 默认模板（严格格式化）；
+// 都解析不出时返回假，调用方退回 Describe
 func ResolveMessage(key string, arguments map[string]any) (string, bool) {
 	defaultMessagesMu.RLock()
 	resolver, locale := defaultResolver, defaultLocale
 	defaultMessagesMu.RUnlock()
-	if resolver == nil {
-		return "", false
+	if resolver != nil {
+		if text, ok := resolver.Resolve(key, locale, arguments); ok {
+			return text, true
+		}
 	}
-	return resolver.Resolve(key, locale, arguments)
+	if template, ok := DefaultTemplate(key); ok {
+		return TryFormatMessage(template, arguments)
+	}
+	return "", false
+}
+
+// MessageUninitializedResult 是未初始化结果（PRIMITIVES_VALIDATION_002）的消息键
+const MessageUninitializedResult = "primitives.result.uninitialized"
+
+// defaultTemplates 是 SDK 各包登记的 en-US 默认模板（RFC-0010：每个键都有 en-US 文案），逐字照 .NET 参考实现的语言文件
+var defaultTemplates = struct {
+	sync.RWMutex
+	values map[string]string
+}{values: map[string]string{
+	MessageUninitializedResult: "The result is uninitialized: a default value is not a valid result.",
+}}
+
+// RegisterDefaultTemplates 登记一组 en-US 默认模板：进程默认解析器解析不出这些键时 Error.Message 用它们。
+// 内核各包（invocation、operation）在初始化时登记自己的键；键不合法或与已登记的模板不同是编程错误，panic FrameworkError
+func RegisterDefaultTemplates(templates map[string]string) {
+	defaultTemplates.Lock()
+	defer defaultTemplates.Unlock()
+	for key, template := range templates {
+		if !IsMessageKey(key) {
+			panic(&FrameworkError{Code: ErrorCodeInvalidArgument, Message: "The message key '" + key + "' of a default template is not valid."})
+		}
+		if existing, ok := defaultTemplates.values[key]; ok && existing != template {
+			panic(&FrameworkError{Code: ErrorCodeInvalidArgument, Message: "The default template of '" + key + "' is already registered with another text."})
+		}
+		defaultTemplates.values[key] = template
+	}
+}
+
+// DefaultTemplate 返回消息键的 en-US 默认模板；没有登记时第二个返回值为假
+func DefaultTemplate(key string) (string, bool) {
+	defaultTemplates.RLock()
+	defer defaultTemplates.RUnlock()
+	template, ok := defaultTemplates.values[key]
+	return template, ok
 }
 
 // Catalog 是一份内存消息目录：区域 → 键 → 模板；实现 MessageResolver，区域没有该键时回退到 en-US，区域名比较不区分大小写
