@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/xihanfun/framework-sdk-go/internal/jsonstrict"
 	"github.com/xihanfun/framework-sdk-go/primitives"
 )
 
@@ -249,7 +250,7 @@ type Manifest struct {
 }
 
 // Read 按 Schema 解析并校验清单 JSON（PRIMITIVES_VALIDATION_001）：成员名区分大小写，未知成员、缺必填成员、任何位置的 null、
-// JSON 之后的多余内容、格式与跨字段约束都算失败；接口版本必须是数字字符串，只有 requires[].version 可以带 ^
+// JSON 之后的多余内容、同一层的重复成员名、空的 activation、格式与跨字段约束都算失败；接口版本必须是数字字符串，只有 requires[].version 可以带 ^
 func Read(data []byte) (*Manifest, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -259,6 +260,9 @@ func Read(data []byte) (*Manifest, error) {
 	}
 	if _, err := decoder.Token(); err != io.EOF {
 		return nil, invalid("the manifest has content after the JSON object")
+	}
+	if name, found, _ := jsonstrict.DuplicateMember(raw); found {
+		return nil, invalid("the manifest has the member '%s' more than once in the same object", name)
 	}
 	if err := checkShape(raw, reflect.TypeFor[Manifest](), "$"); err != nil {
 		return nil, err
@@ -410,6 +414,9 @@ func (m *Manifest) Validate() error {
 			return invalid("'%s' declares the binding '%s' more than once", m.ID, binding.Name)
 		}
 		seen[binding.Name] = true
+	}
+	if m.Activation != nil && len(m.Activation) == 0 {
+		return invalid("the activation of '%s' must list at least one event; leave it out to activate on startup", m.ID)
 	}
 	for _, event := range m.Activation {
 		if !activationPattern.MatchString(event) {

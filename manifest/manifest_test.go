@@ -260,3 +260,23 @@ func TestReadFollowsTheSchemaStrictly(t *testing.T) {
 		}
 	}
 }
+
+// TestReadRejectsDuplicatesAndEmptyActivation 核对同一层的重复成员名与空的 activation 不合法（RFC-0002 解析规则 2，ADR-0235）
+func TestReadRejectsDuplicatesAndEmptyActivation(t *testing.T) {
+	for name, data := range map[string]string{
+		"duplicate kind":          `{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"capability","kind":"provider"}`,
+		"duplicate nested member": `{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"capability","requires":[{"id":"a.b","id":"c.d","version":"1"}]}`,
+		"empty activation":        `{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"capability","activation":[]}`,
+		"stability by number":     `{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"0","kind":"capability"}`,
+		"stability capitalised":   `{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"Stable","kind":"capability"}`,
+		"schema as an object":     `{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"capability","contributes":{"config":{"section":"XiHan:Orders","schema":{"type":"object"}}}}`,
+	} {
+		if _, err := manifest.Read([]byte(data)); err == nil {
+			t.Errorf("%s must be rejected", name)
+		}
+	}
+	m, err := manifest.Read([]byte(`{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"capability"}`))
+	if err != nil || !m.ActivatesOnStartup() {
+		t.Errorf("a missing activation defaults to onStartup: %v", err)
+	}
+}
