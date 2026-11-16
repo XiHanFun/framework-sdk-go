@@ -99,3 +99,14 @@ func TestMessageKeyGrammar(t *testing.T) {
 		t.Error("domain")
 	}
 }
+
+// TestDescribeSortsNamesByUTF16CodeUnits 核对 Describe 的参数按名字的序数顺序（逐个 UTF-16 码元）排列（ADR-0235）
+func TestDescribeSortsNamesByUTF16CodeUnits(t *testing.T) {
+	if got := primitives.Describe("orders.line.invalid", map[string]any{"b": 1, "B": 2, "a": 3}); got != "orders.line.invalid (B=2, a=3, b=1)" {
+		t.Errorf("ASCII names: %q", got)
+	}
+	// U+FF61 的 UTF-8 字节序在 U+1F600 之前，UTF-16 码元序在它之后（代理项 0xD83D 小于 0xFF61）
+	if got := primitives.Describe("orders.line.invalid", map[string]any{"｡": 1, "\U0001F600": 2}); got != "orders.line.invalid (\U0001F600=2, ｡=1)" {
+		t.Errorf("names beyond the basic plane: %q", got)
+	}
+}

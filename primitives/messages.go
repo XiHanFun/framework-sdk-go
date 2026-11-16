@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf16"
 )
 
 // MaxMessageKeyLength 是消息键的最大长度（RFC-0001、RFC-0010）
@@ -38,7 +39,7 @@ func Positional(values ...any) map[string]any {
 }
 
 // Describe 在没有文案时描述一个消息（RFC-0010）：没有参数时只有键，有参数时写 key (name=value, …)；
-// 值按 FormatValue 写，参数顺序规范不作规定，这里按名字排序
+// 值按 FormatValue 写，参数按名字的序数顺序（逐个 UTF-16 码元比较，与 .NET 的 StringComparer.Ordinal 相同，ADR-0235）排列
 func Describe(key string, arguments map[string]any) string {
 	if len(arguments) == 0 {
 		return key
@@ -47,7 +48,7 @@ func Describe(key string, arguments map[string]any) string {
 	for name := range arguments {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	sort.Slice(names, func(i, j int) bool { return compareUTF16(names[i], names[j]) < 0 })
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
 		parts = append(parts, name+"="+FormatValue(arguments[name]))
@@ -179,3 +180,18 @@ func (c Catalog) template(locale, key string) (string, bool) {
 
 // DefaultCatalogLocale 是消息目录的默认区域：目录里找不到请求区域的键时回退到它（RFC-0010）
 const DefaultCatalogLocale = "en-US"
+
+// compareUTF16 按 UTF-16 码元逐个比较两个字符串（序数比较）：与 Go 字符串的字节序只在基本多文种平面以外的字符上不同，
+// 那里 UTF-16 的代理项（U+D800–U+DFFF）排在 U+E000–U+FFFF 之前
+func compareUTF16(left, right string) int {
+	a, b := utf16.Encode([]rune(left)), utf16.Encode([]rune(right))
+	for index := 0; index < len(a) && index < len(b); index++ {
+		if a[index] != b[index] {
+			if a[index] < b[index] {
+				return -1
+			}
+			return 1
+		}
+	}
+	return len(a) - len(b)
+}
