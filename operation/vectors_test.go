@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,6 +109,20 @@ func kernelErrors(t *testing.T) map[string]*primitives.Error {
 		t.Fatal("registry full")
 	}
 	record(registration)
+
+	// 处理器 panic：调用器翻译为 kernel.invocation.unhandled_exception；panic 的日志写到丢弃的处理器
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer slog.SetDefault(previous)
+	panicking := operation.NewRegistry()
+	if err := operation.Add(panicking, operation.Contract{ID: "jobs.boom"}, operation.HandlerFunc[struct{}, struct{}](func(*invocation.Context, struct{}) primitives.Result[struct{}] { panic("boom") }), nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	panicker, err := operation.NewInvoker(panicking, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record(panicker.Invoke(invocation.Background(), operation.Request{ID: "jobs.boom"}).Outcome.Err())
 	return produced
 }
 
@@ -115,4 +132,50 @@ func sameNames(left, right []string) bool {
 	slices.Sort(left)
 	slices.Sort(right)
 	return slices.Equal(left, right)
+}
+
+// counts 与 order 是 payload-reasons.json 的两个请求类型：成员值都是整数的对象，与 { lines: [ { quantity: 整数 } ] }
+type counts map[string]int
+
+type order struct {
+	Lines []struct {
+		Quantity int `json:"quantity"`
+	} `json:"lines"`
+}
+
+// TestPayloadReasonsFollowTheVectors 回放 payload-reasons.json：载荷不合法时 reason 是期望的 JSON 路径，语法错误只要求以 $ 开头
+func TestPayloadReasonsFollowTheVectors(t *testing.T) {
+	vectors, err := conformance.PayloadReasons()
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := operation.NewRegistry()
+	if err := operation.Add(registry, operation.Contract{ID: "counts.post"}, operation.HandlerFunc[counts, counts](func(_ *invocation.Context, request counts) primitives.Result[counts] { return primitives.Ok(request) }), nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := operation.Add(registry, operation.Contract{ID: "order.post"}, operation.HandlerFunc[order, order](func(_ *invocation.Context, request order) primitives.Result[order] { return primitives.Ok(request) }), nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	invoker, err := operation.NewInvoker(registry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := func(request, payload string) (string, *primitives.Error) {
+		failure := invoker.Invoke(invocation.Background(), operation.Request{ID: request + ".post", Payload: []byte(payload)}).Outcome.Err()
+		if failure == nil || failure.Code != operation.ErrorCodeInvalidPayload || failure.MessageKey != operation.MessageInvalidPayload {
+			return "", failure
+		}
+		text, _ := failure.Details["reason"].(string)
+		return text, failure
+	}
+	for _, c := range vectors.Cases {
+		if got, failure := reason(c.Request, c.Payload); got != c.Reason {
+			t.Errorf("%s: %s reason %q, want %q (%v)", c.Name, c.Payload, got, c.Reason, failure)
+		}
+	}
+	for _, c := range vectors.SyntaxErrors {
+		if got, failure := reason(c.Request, c.Payload); !strings.HasPrefix(got, "$") {
+			t.Errorf("syntax error %s: reason %q must start with $ (%v)", c.Payload, got, failure)
+		}
+	}
 }

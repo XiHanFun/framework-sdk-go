@@ -211,3 +211,32 @@ func TestBaggageValuesFollowTheVectors(t *testing.T) {
 		}
 	}
 }
+
+// TestDuplicatesFollowTheWireEncodingVectors 回放 wire-encoding.json 的 duplicates：同一层有重复成员名的 Result 与 Error 必须被拒绝（ADR-0235）
+func TestDuplicatesFollowTheWireEncodingVectors(t *testing.T) {
+	vectors, err := conformance.WireEncoding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vectors.Duplicates) == 0 {
+		t.Fatal("the vector has no duplicate cases")
+	}
+	for _, c := range vectors.Duplicates {
+		var decodeErr error
+		switch c.Target {
+		case "result":
+			_, decodeErr = roundTripResult(c.Kind, []byte(c.Text))
+		case "error":
+			var decoded primitives.Error
+			decodeErr = json.Unmarshal([]byte(c.Text), &decoded)
+		default:
+			t.Fatalf("%s: unknown target %q", c.Name, c.Target)
+		}
+		if decodeErr == nil {
+			t.Errorf("%s: %s must be rejected", c.Name, c.Text)
+		}
+		if rules.HasNoDuplicateMembers([]byte(c.Text)) == nil {
+			t.Errorf("%s: the reference rule must see the duplicate too", c.Name)
+		}
+	}
+}
