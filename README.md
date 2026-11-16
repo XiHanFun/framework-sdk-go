@@ -143,7 +143,7 @@ Go 自己的文本（日期、`Duration`、结构体）不跨语言：插件的�
 - Resilience 阶段 `DeadlineMiddleware`：进入时截止时间已到即 `KERNEL_TIMEOUT_001` + `kernel.invocation.deadline_before_start`，后面的中间件与处理器不执行；进入时不核对取消；途中的超时与取消按截止令牌归因。
 - Validate 阶段 `ValidationMiddleware`：原始调用（`Invoker.Invoke`）在这里把载荷解码成请求，失败即 `KERNEL_VALIDATION_001`；类型化调用（`operation.Invoke`）跳过。
 
-进入管道前只核对未登记（`KERNEL_NOTFOUND_001`）与类型化调用的类型不符（`KERNEL_VALIDATION_002`），按这个顺序。`Invoker.Pipeline()` 返回实际执行的管道（含内置步骤）。
+进入管道前只核对未登记（`KERNEL_NOTFOUND_001`）与类型化调用的类型不符（`KERNEL_VALIDATION_002`），按这个顺序。`Invoker.Invoke` 在管道结束之后才用 `encoding/json` 把响应编码成载荷，中间件用 `operation.ResponseOf(ctx)` 看到的是编码之前的响应对象；写不出时（浮点成员是 `NaN` 或无穷、通道或函数这样序列化不支持的值、`MarshalJSON` 失败或 panic）以 `KERNEL_UNEXPECTED_001` + `kernel.invocation.unhandled_exception` 结束、没有载荷、不 panic，原因是 `FrameworkError` 时放进 `inner`；`NaN` 不写成 `null` 或字符串。类型化入口 `operation.Invoke` 不编码。`Invoker.Pipeline()` 返回实际执行的管道（含内置步骤）。
 
 ## 破坏性改动与迁移
 
@@ -179,6 +179,7 @@ Go 自己的文本（日期、`Duration`、结构体）不跨语言：插件的�
 - 清单可选的字符串改为指针（ADR-0236 的补充）：`Manifest.Package`、`Manifest.Entry` 与 `ConfigContribution.Schema` 由 `string` 改为 `*string`，分得清「写了空串」与「没写」，写了空串时 `Write` 照写 `"package": ""`，与 .NET 一致（旧版一律省略空串）。迁移：赋值改为 `Package: manifest.Text("XiHan.Orders")`，读取改为先判 `nil` 再解引用；比较两份清单时比较指向的值。
 - 管道配置错误的消息改为 .NET 的英文原文（RFC-0004 规则 8，ADR-0236 的补充），各语言逐字相同：如 `Middleware ordering constraints in stage 'validate' form a cycle: 'Guard[a]', 'Guard[b]'.`（成环时按基准次序列出全部仍被卡住的中间件，按名字登记的实例写成 `类型名[名字]`；旧版只写阶段）、`The ordering constraint of middleware 'Guard[a]' references unregistered middleware 'zz'.`、`Unknown pipeline stage 'bogus'.`。约束目标改为逐阶段解析，前一阶段成环先于后一阶段的约束目标未登记报出（旧版先解析全部约束）。错误码不变。迁移：按消息文本匹配的地方改为按错误码匹配。
 - 任意 JSON 原样保留读到的值（RFC-0011 规则 2，ADR-0236 的补充）：载荷与 `Result` 值里类型为 `any` 的成员，数字由 `int64` / `float64` 改为原文的 `json.Number`（上一版按值模型读，`2.0` 写回成 `2`，`1e400` 读成无穷、写不进响应）。`Error.Details` 与插件协议的错误细节仍按值模型读成 `int64` / `float64`。迁移：对 `any` 里的数字做类型断言的代码改为断言 `json.Number`，再用 `Int64()` / `Float64()` 取值。
+- 响应在管道结束之后编码（RFC-0011 规则 10「编码」，ADR-0236 的补充）：中间件里不再有载荷，`operation.ResponsePayloadOf` 去掉，改为 `operation.ResponseOf(ctx)` 返回编码之前的响应对象（类型化调用也有）；写不出的响应由 `KERNEL_UNEXPECTED_001` + 没有键的英文文案改为 `kernel.invocation.unhandled_exception`，原因只进日志，框架错误放进 `inner`，`MarshalJSON` 的 panic 也接住。迁移：在 Egress 里读响应载荷的中间件改读 `ResponseOf` 的对象，需要文本时自己编码。
 
 ## 开发
 

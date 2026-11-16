@@ -139,18 +139,52 @@ type Descriptor struct {
 	// Owner 是归属（清单 ID 或 app）。
 	Owner   string
 	handler any
-	// decode 把载荷解码成请求（Validate 阶段的内置步骤用）；handle 执行处理器并编码响应
+	// decode 把载荷解码成请求（Validate 阶段的内置步骤用）；handle 执行处理器，成功时返回响应对象（还没有编码）
 	decode func(payload []byte) (any, *primitives.Error)
-	handle func(ctx *invocation.Context, request any) Response
+	handle func(ctx *invocation.Context, request any) (any, primitives.Result[primitives.Unit])
 }
 
-// Execute 解码载荷、执行、编码响应；解码失败返回 KERNEL_VALIDATION_001。不经管道
+// Execute 解码载荷、执行、编码响应，不经管道：解码失败返回 KERNEL_VALIDATION_001，响应写不出返回 KERNEL_UNEXPECTED_001
+// （kernel.invocation.unhandled_exception），与 Invoker.Invoke 的编码相同
 func (d *Descriptor) Execute(ctx *invocation.Context, payload []byte) Response {
 	request, err := d.decode(payload)
 	if err != nil {
 		return Response{Outcome: primitives.Fail[primitives.Unit](err)}
 	}
-	return d.handle(ctx, request)
+	response, outcome := d.handle(ctx, request)
+	if !outcome.OK() {
+		return Response{Outcome: outcome}
+	}
+	encoded, failure := encodeResponse(ctx, d.Contract.ID, response)
+	if failure != nil {
+		return Response{Outcome: primitives.Fail[primitives.Unit](failure)}
+	}
+	return Response{Outcome: outcome, Payload: encoded}
+}
+
+// encodeResponse 把响应对象编码成载荷（RFC-0011 规则 10「编码」，ADR-0236）：按响应类型用 encoding/json 写出，类型化的浮点成员是 NaN 或
+// 无穷、或有序列化不支持的值时写不出，不写成 null 或字符串，以 KERNEL_UNEXPECTED_001 + kernel.invocation.unhandled_exception 结束；
+// 原因是框架错误（MarshalJSON 返回或 panic 的 FrameworkError）时它的错误放进 inner。原因只写进日志，不交给调用方
+func encodeResponse(ctx *invocation.Context, id string, response any) (encoded []byte, failure *primitives.Error) {
+	fail := func(cause any) {
+		slog.Default().Error("the response of an operation could not be encoded", "operation", id, "traceId", ctx.TraceID(), "error", fmt.Sprint(cause))
+		var inner *primitives.Error
+		var framework *primitives.FrameworkError
+		if err, ok := cause.(error); ok && errors.As(err, &framework) {
+			inner = framework.ToError()
+		}
+		encoded, failure = nil, primitives.Unexpected(ErrorCodeUnexpected, invocation.MessageUnhandledException, nil, inner)
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			fail(recovered)
+		}
+	}()
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		fail(err)
+	}
+	return encoded, failure
 }
 
 // Registry 是操作登记表：ID 唯一，容量 Capacity。
@@ -183,17 +217,13 @@ func Add[Req, Res any](registry *Registry, contract Contract, handler Handler[Re
 		}
 		return request, nil
 	}
-	descriptor.handle = func(ctx *invocation.Context, request any) Response {
+	descriptor.handle = func(ctx *invocation.Context, request any) (any, primitives.Result[primitives.Unit]) {
 		result := handler.Handle(ctx, request.(Req))
 		value, ok := result.Value()
 		if !ok {
-			return Response{Outcome: primitives.Fail[primitives.Unit](result.Err())}
+			return nil, primitives.Fail[primitives.Unit](result.Err())
 		}
-		encoded, marshalErr := json.Marshal(value)
-		if marshalErr != nil {
-			return Response{Outcome: primitives.Fail[primitives.Unit](primitives.Literal(ErrorCodeUnexpected, "The response of '"+contract.ID+"' could not be encoded: "+marshalErr.Error(), nil, nil))}
-		}
-		return Response{Outcome: primitives.Success(), Payload: encoded}
+		return value, primitives.Success()
 	}
 
 	registry.mu.Lock()
@@ -259,8 +289,9 @@ type call struct {
 	descriptor *Descriptor
 	request    Request
 	terminal   pipeline.Step
-	response   []byte
-	responded  bool
+	// response 是处理器产出的响应对象（编码之前），responded 为真表示已产出
+	response  any
+	responded bool
 	// raw 为真表示原始调用：Validate 阶段的内置步骤把载荷解码进 decoded；类型化调用跳过解码
 	raw     bool
 	decoded any
@@ -301,8 +332,9 @@ func RequestOf(ctx *invocation.Context) (Request, bool) {
 	return state.request, true
 }
 
-// ResponsePayloadOf 返回 handle 阶段写回的响应载荷（成功时）；还没有响应时第二个返回值为假
-func ResponsePayloadOf(ctx *invocation.Context) ([]byte, bool) {
+// ResponseOf 返回处理器产出的响应对象（成功时，编码之前，对应 .NET 的 FindOperationResponse）：XGI 入口在管道结束之后才把它编码成载荷，
+// 中间件看到的是这个对象（RFC-0011 规则 3、规则 10）；还没有响应时第二个返回值为假
+func ResponseOf(ctx *invocation.Context) (any, bool) {
 	state, ok := current(ctx)
 	if !ok || !state.responded {
 		return nil, false
@@ -352,7 +384,8 @@ func (i *Invoker) Pipeline() ([]pipeline.Descriptor, error) { return i.pipeline.
 // Registry 返回登记表。
 func (i *Invoker) Registry() *Registry { return i.registry }
 
-// Invoke 执行一个 XGI 请求：未登记返回 KERNEL_NOTFOUND_001（不进管道）；否则经完整管道执行，载荷在 Validate 阶段解码
+// Invoke 执行一个 XGI 请求：未登记返回 KERNEL_NOTFOUND_001（不进管道）；否则经完整管道执行，载荷在 Validate 阶段解码，
+// 响应在管道结束之后编码，写不出时 KERNEL_UNEXPECTED_001（kernel.invocation.unhandled_exception）、没有载荷
 func (i *Invoker) Invoke(ctx *invocation.Context, request Request) Response {
 	descriptor, ok := i.registry.Get(request.ID)
 	if !ok {
@@ -363,11 +396,11 @@ func (i *Invoker) Invoke(ctx *invocation.Context, request Request) Response {
 		if err := state.decodeOnce(); err != nil {
 			return primitives.Fail[primitives.Unit](err)
 		}
-		response := descriptor.handle(ctx, state.decoded)
-		if response.Outcome.OK() {
-			state.response, state.responded = response.Payload, true
+		response, outcome := descriptor.handle(ctx, state.decoded)
+		if outcome.OK() {
+			state.response, state.responded = response, true
 		}
-		return response.Outcome
+		return outcome
 	}
 	outcome := i.step(begin(ctx, state))
 	if !outcome.OK() {
@@ -376,7 +409,12 @@ func (i *Invoker) Invoke(ctx *invocation.Context, request Request) Response {
 	if !state.responded {
 		return Response{Outcome: primitives.Fail[primitives.Unit](noResponse(request.ID))}
 	}
-	return Response{Outcome: outcome, Payload: state.response}
+	// 管道结束之后才编码（RFC-0011 规则 10「编码」）：写不出时以 unhandled_exception 结束、没有载荷，不抛给调用方
+	encoded, failure := encodeResponse(ctx, request.ID, state.response)
+	if failure != nil {
+		return Response{Outcome: primitives.Fail[primitives.Unit](failure)}
+	}
+	return Response{Outcome: outcome, Payload: encoded}
 }
 
 // decodeOnce 解码原始调用的载荷，只解码一次
@@ -409,6 +447,9 @@ func Invoke[Req, Res any](invoker *Invoker, ctx *invocation.Context, id string, 
 	state.terminal = func(ctx *invocation.Context) primitives.Result[primitives.Unit] {
 		result = handler.Handle(ctx, request)
 		produced = result.OK()
+		if value, ok := result.Value(); ok {
+			state.response, state.responded = value, true
+		}
 		return result.Unit()
 	}
 	outcome := invoker.step(begin(ctx, state))

@@ -75,8 +75,8 @@ func TestInvokeRestoresTheItemsAfterTheCall(t *testing.T) {
 	if _, ok := operation.RequestOf(ctx); ok {
 		t.Error("the request must not outlive the call")
 	}
-	if _, ok := operation.ResponsePayloadOf(ctx); ok {
-		t.Error("the response payload must not outlive the call")
+	if _, ok := operation.ResponseOf(ctx); ok {
+		t.Error("the response must not outlive the call")
 	}
 	if value, ok := ctx.Get("own"); !ok || value != 1 {
 		t.Error("the caller's own items stay")
