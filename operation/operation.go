@@ -3,7 +3,6 @@
 package operation
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xihanfun/framework-sdk-go/internal/jsoncodec"
 	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
 	"github.com/xihanfun/framework-sdk-go/invocation"
 	"github.com/xihanfun/framework-sdk-go/pipeline"
@@ -234,25 +234,24 @@ func (r *Registry) List() []*Descriptor {
 	return descriptors
 }
 
-// decode 解码请求载荷：空载荷等价于 {}；先过共同的 JSON 读取检查（RFC-0001「JSON 文本」，ADR-0236），语法错误（含只有空白、BOM、
-// 嵌套超过 64 层、孤立的代理项）的 reason 是 $，任何一层的重复成员写第一处重复的路径；null、类型不匹配为 KERNEL_VALIDATION_001，
-// reason 只写出错位置的 JSON 路径
+// decode 解码请求载荷（RFC-0011 规则 2，ADR-0236）：空载荷等价于 {}；先过共同的 JSON 读取检查，语法错误（含只有空白、BOM、嵌套超过 64 层、
+// 孤立的代理项）的 reason 是 $，任何一层的重复成员写第一处重复的路径；载荷是 null 时 reason 是 $；再按请求类型解码，按文本顺序报第一处
+// 类型不符的路径，带 xihan:"required" 的成员缺少时在所在对象结束时报该对象的路径。都是 KERNEL_VALIDATION_001
 func decode[Req any](id string, payload []byte) (Req, *primitives.Error) {
 	var request Req
 	if len(payload) == 0 {
 		payload = []byte("{}")
 	}
-	if problem := jsontext.Check(payload); problem != nil {
+	root, problem := jsontext.Parse(payload)
+	if problem != nil {
 		return request, InvalidPayload(id, problem.Path)
 	}
-	trimmed := bytes.TrimSpace(payload)
 	// JSON null 不是请求对象：载荷不合法，reason 写 $（ADR-0235，旧版写 the payload is null）
-	if bytes.Equal(trimmed, []byte("null")) {
+	if root.Kind == jsontext.Null {
 		return request, InvalidPayload(id, "$")
 	}
-	err := json.Unmarshal(trimmed, &request)
-	if path, invalid := payloadPath(trimmed, reflect.TypeFor[Req](), err); invalid {
-		return *new(Req), InvalidPayload(id, path)
+	if problem := jsoncodec.Decode(payload, root, &request); problem != nil {
+		return *new(Req), InvalidPayload(id, problem.Path)
 	}
 	return request, nil
 }

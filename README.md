@@ -79,6 +79,29 @@ response := invoker.Invoke(ctx, operation.Request{ID: "orders.create", Payload: 
 
 线上的数字按值模型往返（RFC-0001「Result」与 RFC-0010「模板」的值模型，ADR-0236）：`Result` 的值与 `Error` 的 `details`（插件协议 `Error.details` 的 JSON 文本也一样）读进 `any` 时，64 位有符号范围内整数写法的数字是 `int64`，原样往返（`9007199254740993` 不会变成 `9007199254740992`），其余是 `float64`，`1e400` 为无穷；写出时整数值的浮点带小数点（`2.0`、`-0.0`，范围外如 `1E+17`），对方读回的仍是浮点，`float32` 先换成最接近的 `float64`（`float32(0.1)` 写 `0.10000000149011612`），超出 `int64` 的无符号整数按浮点写，`NaN` 与无穷写成字符串 `"NaN"`、`"Infinity"`、`"-Infinity"`。字符串只转义必须转义的字符（`"`、`\`、控制字符），`<`、`>`、`&` 与非 ASCII 原样。类型化的值（`Result[Order]`、`Maybe[T]`、`ID[Tag, V]`）按与操作载荷相同的规则解码，见下文「操作载荷」。
 
+### 操作载荷
+
+`operation.Invoker.Invoke` 把载荷解码成请求类型的规则照 RFC-0011 规则 2（ADR-0236，与 .NET 的 System.Text.Json 缺省读取选项一致，不随 `encoding/json` 的习惯）。失败都是 `KERNEL_VALIDATION_001` + `kernel.operation.invalid_payload`，`reason` 是第一处问题的 JSON 路径：
+
+- 空载荷等价于 `{}`；先过上面的共同检查，语法错误写 `$`，重复成员写第一处重复的路径；载荷是 `null` 写 `$`。
+- 成员名区分大小写（`encoding/json` 不区分），未知成员忽略；数字不从字符串读，字符串也不从数字读（字段带 `json:",string"` 时除外）。
+- 整数字段不接受小数点与指数（`1.0`、`1e2` 都不是整数），超出字段类型的范围即不符（`int32` 字段收到 `2147483648`）；浮点字段接受整数写法，`1e400` 上溢为无穷，`1e-400` 为 0，`float32` 按 32 位的范围读。
+- `null`：字符串、切片、数组、映射、结构体、指针与 `any` 接受，等于没有值（字段保持零值）；整数、浮点与布尔（含它们的切片项与映射值）不接受。要接受 `null` 的数值或布尔写成指针（`*int64`、`*bool`）。
+- 必填：字段带 `xihan:"required"` 标签即必填（对应 C# 的 `required`），缺少时在所在对象结束时报该对象的路径（根上为 `$`，嵌套如 `$.inner`）；只要求成员出现，值为 `null` 也算出现。没有这个标签的成员缺少时取零值。
+- 按文本顺序报第一处问题：写在前面的类型不符先报，嵌套对象里缺少的成员先于外层后面的类型不符。
+- 实现 `json.Unmarshaler` 的类型（`time.Time`、`json.RawMessage` 等）拿到原文自己解码，失败报它的路径；实现 `encoding.TextUnmarshaler` 的类型只接字符串；`any` 按值模型读；`[]byte` 读 base64 字符串。字段名、嵌入结构体的提升与 `json` 标签照 `encoding/json`。
+
+```go
+type CreateOrder struct {
+	Customer string        `json:"customer" xihan:"required"` // 必填，null 也算出现
+	Note     string        `json:"note"`                       // 可选，null 等于没有
+	Quantity int32         `json:"quantity"`                   // 可选，不接受 null 与 1.0
+	Discount *float64      `json:"discount"`                   // 可选，接受 null
+	Lines    []OrderLine   `json:"lines"`
+	Extra    any           `json:"extra"`                      // 任意 JSON，按值模型
+}
+```
+
 ## 破坏性改动与迁移
 
 本节列出与规范、.NET 参考实现对齐时改掉的旧行为，以及调用方怎么改。
@@ -106,6 +129,7 @@ response := invoker.Invoke(ctx, operation.Request{ID: "orders.create", Payload: 
 - `Result` 与 `Error` 里同一层的重复成员名不合法（ADR-0235），旧版由 `encoding/json` 取最后一个。`Error` 读取更严：`details` 为 `null` 或数组、`inner` 为 `null`、`messageKey` 不合文法（含空串）、`message` 缺失、为空串或不是字符串时 `json.Unmarshal` 返回 `PRIMITIVES_VALIDATION_001`，旧版会静默忽略。发送端按上面的编码写即可；`messageKey` 为空时不写这个成员。
 - JSON 文本的共同读取检查（RFC-0001「JSON 文本」，ADR-0236）：`Result` 与 `Error` 读取时开头的 BOM、嵌套超过 64 层、孤立的代理项转义（`"\ud800"`）与非法 UTF-8 都拒绝，旧版由 `encoding/json` 接受（孤立的代理项换成 U+FFFD）。操作载荷先过同一遍检查：语法错误（含 BOM、嵌套超过 64 层、孤立的代理项）的 `reason` 一律 `$`；任何一层的重复成员是 `KERNEL_VALIDATION_001`，`reason` 是第一处重复的路径，先于其他问题（旧版 `encoding/json` 取最后一个）；只有空白的载荷不再等价于 `{}`（空载荷仍等价于 `{}`），按语法错误处理。`manifest.Read` 同样拒绝这些写法。迁移：发送合法的 UTF-8 JSON，不在文本前加 BOM，生成 JSON 的代码去掉重复成员。
 - 线上的数字按值模型往返（ADR-0236）：`Result[any]`、`Result[map[string]any]` 的值与 `Error.Details` 里的整数读成 `int64`，旧版由 `encoding/json` 读成 `float64`（超过 2^53 的整数因此失真）；整数值的浮点写成 `2.0`、`-0.0`（旧版写 `2`、`-0`，对方读成整数）；`NaN` 与无穷写成字符串（旧版 `json.Marshal` 报错，整个 `Result` 写不出）。插件协议的 `Error.details` 照同一模型读写，读回的数组与对象是 `[]any` 与 `map[string]any`，不是合法 JSON 对象的细节丢弃。`Result`、`Maybe`、`ID` 的类型化值改用 SDK 的解码：成员名区分大小写（旧版 `"Count"` 也能读进 `count`）、整数不接受 `1.0`、整数与布尔不接受 `null`、数字不从字符串读。迁移：按 `float64` 断言细节里整数的代码改为同时接受 `int64`（或用 `primitives.FormatValue` 取文本）；发送端照字段的 JSON 名字写成员。
+- 操作载荷按 RFC-0011 规则 2 解码（ADR-0236），不再交给 `encoding/json`：成员名区分大小写（旧版 `"Quantity"` 也能读进 `quantity`）；`int32` 等窄整数按自己的范围核对；浮点字段的 `1e400` 读成无穷（旧版报类型不符）；`null` 落在整数、浮点、布尔的切片项与映射值上也报类型不符；新增必填标签 `xihan:"required"`；几处问题同时存在时按文本顺序报第一处，缺少的必填成员在所在对象结束时报。迁移：调用方照字段的 JSON 名字写成员；需要接受 `null` 的数值改用指针；契约要求必填的成员加上 `xihan:"required"`。
 
 ## 开发
 
