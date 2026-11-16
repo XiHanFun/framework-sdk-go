@@ -108,9 +108,9 @@ func WithTraceParent(traceParent string) Option {
 	}
 }
 
-// WithBaggage 设置多个 Baggage 键值；键必须符合 xihan.<name>，不合法的键是编程错误。已登记键的值不能进入上下文时
-// （空、超过 256 个 UTF-16 码元、含控制字符，primitives.IsBaggageEntryAcceptable）丢弃这个成员，与 W3C Baggage 忽略
-// 不合法的成员一致；幂等键例外（ADR-0204、ADR-0233）
+// WithBaggage 由一组 Baggage 构造上下文，是外部输入的入口（载体、插件元数据）：键必须符合 xihan.<name>，不合法的键是编程错误；
+// 已登记键的值不能进入上下文时（空、超过 256 个 UTF-16 码元、含控制字符，primitives.IsBaggageEntryAcceptable）丢弃这个成员，
+// 原有的同名值保留，与 W3C Baggage 忽略不合法的成员一致；幂等键例外（conventions/baggage-keys.md，ADR-0204、ADR-0235）
 func WithBaggage(baggage map[string]string) Option {
 	return func(c *Context) {
 		for key, value := range baggage {
@@ -217,15 +217,18 @@ func (c *Context) GetBaggage(key string) (string, bool) {
 	return value, ok
 }
 
-// WithBaggage 派生一个多一个 Baggage 键值的上下文；键必须符合 xihan.<name>。已登记键的值不能进入上下文时丢弃这个成员
-// （规则同选项 WithBaggage），派生的上下文保持原来的 Baggage
+// WithBaggage 派生一个多一个 Baggage 键值的上下文；键必须符合 xihan.<name>。这是程序内逐项派生：给已登记的键（幂等键除外）
+// 一个不能进入上下文的值（空、超过 256 个 UTF-16 码元、含控制字符）是编程错误，与键不合文法一样 panic FrameworkError
+// （PRIMITIVES_VALIDATION_001），不静默丢弃也不保留原值（conventions/baggage-keys.md，ADR-0235）。外部输入用选项 WithBaggage，
+// 那里丢弃不合的成员
 func (c *Context) WithBaggage(key, value string) *Context {
 	mustBaggageKey(key)
+	if !primitives.IsBaggageEntryAcceptable(key, value) {
+		panic(&primitives.FrameworkError{Code: primitives.ErrorCodeInvalidArgument, Message: fmt.Sprintf("The value of the baggage key '%s' must be non-empty, at most %d UTF-16 code units long and free of control characters.", key, primitives.MaxBaggageValueLength)})
+	}
 	derived := *c
 	derived.baggage = c.Baggage()
-	if primitives.IsBaggageEntryAcceptable(key, value) {
-		derived.baggage[key] = value
-	}
+	derived.baggage[key] = value
 	return &derived
 }
 

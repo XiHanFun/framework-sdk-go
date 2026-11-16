@@ -40,9 +40,31 @@ func TestBaggageValuesAreFilteredWhenTheContextIsBuilt(t *testing.T) {
 		if got, ok := created.GetBaggage("xihan.feature-flag"); !ok || got != value {
 			t.Errorf("%q: unregistered keys are left to the carriers", value)
 		}
+		kept := invocation.Background(
+			invocation.WithBaggage(map[string]string{primitives.BaggageCorrelation: "c1"}),
+			invocation.WithBaggage(map[string]string{primitives.BaggageCorrelation: value}))
+		if kept.Correlation() != "c1" {
+			t.Errorf("%q: external input keeps the earlier value, got %q", value, kept.Correlation())
+		}
 		base := invocation.Background(invocation.WithBaggage(map[string]string{primitives.BaggageCorrelation: "c1"}))
-		if derived := base.WithBaggage(primitives.BaggageCorrelation, value); derived.Correlation() != "c1" {
-			t.Errorf("%q must be dropped when the context is derived, keeping the previous value, got %q", value, derived.Correlation())
+		assertFrameworkPanic(t, value, func() { base.WithBaggage(primitives.BaggageCorrelation, value) })
+		if derived := base.WithBaggage(primitives.BaggageIdempotencyKey, value); derived.IdempotencyKey() != value {
+			t.Errorf("%q: deriving the idempotency key is not checked", value)
+		}
+		if derived := base.WithBaggage("xihan.feature-flag", value); func() string { v, _ := derived.GetBaggage("xihan.feature-flag"); return v }() != value {
+			t.Errorf("%q: deriving an unregistered key is not checked", value)
 		}
 	}
+}
+
+// assertFrameworkPanic 核对 fn 以 PRIMITIVES_VALIDATION_001 的 FrameworkError panic：程序内逐项派生给已登记的键一个不合的值是编程错误（ADR-0235）
+func assertFrameworkPanic(t *testing.T, value string, fn func()) {
+	t.Helper()
+	defer func() {
+		framework, ok := recover().(*primitives.FrameworkError)
+		if !ok || framework.Code != primitives.ErrorCodeInvalidArgument {
+			t.Errorf("%q: deriving a registered key with it must panic with %s", value, primitives.ErrorCodeInvalidArgument)
+		}
+	}()
+	fn()
 }
