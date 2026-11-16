@@ -89,7 +89,7 @@ response := invoker.Invoke(ctx, operation.Request{ID: "orders.create", Payload: 
 - `null`：字符串、切片、数组、映射、结构体、指针与 `any` 接受，等于没有值（字段保持零值）；整数、浮点与布尔（含它们的切片项与映射值）不接受。要接受 `null` 的数值或布尔写成指针（`*int64`、`*bool`）。
 - 必填：字段带 `xihan:"required"` 标签即必填（对应 C# 的 `required`），缺少时在所在对象结束时报该对象的路径（根上为 `$`，嵌套如 `$.inner`）；只要求成员出现，值为 `null` 也算出现。没有这个标签的成员缺少时取零值。
 - 按文本顺序报第一处问题：写在前面的类型不符先报，嵌套对象里缺少的成员先于外层后面的类型不符。
-- 实现 `json.Unmarshaler` 的类型（`time.Time`、`json.RawMessage` 等）拿到原文自己解码，失败报它的路径；实现 `encoding.TextUnmarshaler` 的类型只接字符串；`any` 是任意 JSON，原样保留读到的值：数字读成原文的 `json.Number`（`1e400`、超出双精度的整数、`2.0` 与 `2` 的区别都在），字符串、布尔、`null`、`[]any` 与 `map[string]any` 照常，处理器原样返回时响应的 JSON 值与原文相等；`[]byte` 读 base64 字符串。载荷的文本按 JSON 值比较，空白、成员顺序、转义与数字的写法不是契约。字段名、嵌入结构体的提升与 `json` 标签照 `encoding/json`。
+- 实现 `json.Unmarshaler` 的类型（`time.Time`、`json.RawMessage` 等）拿到原文自己解码，失败报它的路径；实现 `encoding.TextUnmarshaler` 的类型只接字符串；`any` 是任意 JSON，原样保留读到的值：数字读成原文的 `json.Number`（`1e400`、超出双精度的整数、`2.0` 与 `2` 的区别都在），字符串、布尔、`null`、`[]any` 与 `map[string]any` 照常，处理器原样返回时响应的 JSON 值与原文相等；`[]byte` 读 base64 字符串。载荷的文本按 JSON 值比较，空白、成员顺序、转义与数字的写法不是契约。规范不规定的 Go 自己的类型（ADR-0236 的补充）：字段是非空接口（如 `io.Reader`、自定义的 `Shape` 接口）时解码报该处的路径，SDK 不猜具体类型，多态的请求由类型自己实现 `UnmarshalJSON`；用户自己的 `UnmarshalJSON` 返回错误时报它所在值的路径，不往值的内部定位（SDK 自己的 `Result`、`Maybe` 等例外，它们报到里面）。字段名、嵌入结构体的提升与 `json` 标签照 `encoding/json`。
 
 ```go
 type CreateOrder struct {
