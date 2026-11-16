@@ -10,8 +10,9 @@ import (
 )
 
 // FormatValue 返回消息参数的文本形式，模板与 Describe 共用（RFC-0010）：字符串原样，整数十进制，布尔 true / false，
-// nil 为空串；浮点在 |x| 属于 [1e-4, 1e15) 时写最短往返的十进制、不用指数，整数值不带小数点（2.0 写 2），范围之外
-// 不作规定（这里写 1E+15、1E-05 这样的指数形式）。数组与对象不作规定（这里按 fmt.Sprint）
+// nil 为空串；浮点在 1e-4 ≤ |x| < 1e17 或 x = 0 时写最短往返的十进制、不用指数，整数值不带小数点（2.0 写 2，1e16 写
+// 10000000000000000），范围之外写最短往返的有效数字加 E、符号与至少两位的指数（1E+17、9.9E-05、5E-324），负零写 -0，
+// 非数与无穷写 NaN、Infinity、-Infinity（ADR-0235，取自 .NET 10 的实测）。数组与对象不作规定（这里按 fmt.Sprint）
 func FormatValue(value any) string {
 	switch typed := value.(type) {
 	case nil:
@@ -77,7 +78,8 @@ func FormatValue(value any) string {
 	return fmt.Sprint(value)
 }
 
-// formatFloat 写浮点：|x| 属于 [1e-4, 1e15) 时最短往返、不用指数；之外用大写 E 的指数形式，NaN 与无穷照 .NET 的不变文化
+// formatFloat 写浮点：1e-4 ≤ |x| < 1e17 或 x = 0（含负零）时最短往返、不用指数；之外是 strconv 的最短往返指数形式换成大写 E
+// （已带符号与至少两位的指数，与 .NET 的 1E+17、9.9E-05 一致）；NaN 与无穷照 .NET 的不变文化
 func formatFloat(value float64, bitSize int) string {
 	switch {
 	case math.IsNaN(value):
@@ -87,7 +89,7 @@ func formatFloat(value float64, bitSize int) string {
 	case math.IsInf(value, -1):
 		return "-Infinity"
 	}
-	if magnitude := math.Abs(value); magnitude >= 1e-4 && magnitude < 1e15 {
+	if magnitude := math.Abs(value); magnitude == 0 || (magnitude >= 1e-4 && magnitude < 1e17) {
 		return strconv.FormatFloat(value, 'f', -1, bitSize)
 	}
 	return strings.ToUpper(strconv.FormatFloat(value, 'g', -1, bitSize))

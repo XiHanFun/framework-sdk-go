@@ -204,3 +204,26 @@ func TestFixedFloatsRoundLikeStrconv(t *testing.T) {
 		}
 	}
 }
+
+// TestFixedWritesEveryIntegerDigit 核对 F 与 N 不用指数、写出全部整数位，负数舍入成零时保留负号（ADR-0235）
+func TestFixedWritesEveryIntegerDigit(t *testing.T) {
+	cases := []struct {
+		value  any
+		format string
+		want   string
+	}{
+		{1e20, "F2", "100000000000000000000.00"},
+		{1e20, "N2", "100,000,000,000,000,000,000.00"},
+		{1e21, "F2", "1000000000000000000000.00"},
+		{-0.001, "F2", "-0.00"},
+		{-0.4, "N0", "-0"},
+		{math.Copysign(0, -1), "F", "-0.00"},
+		{0.5, "N0", "0"},
+		{1.5, "N0", "2"},
+	}
+	for _, c := range cases {
+		if got := primitives.FormatArgument(c.value, c.format); got != c.want {
+			t.Errorf("FormatArgument(%v, %q) = %q, want %q", c.value, c.format, got, c.want)
+		}
+	}
+}
