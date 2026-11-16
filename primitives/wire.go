@@ -2,11 +2,18 @@ package primitives
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+
+	"github.com/xihanfun/framework-sdk-go/internal/jsonstrict"
 )
 
-// wireObject 把线上的 JSON 对象读成成员表：成员名区分大小写；不是对象（含 null）即失败
+// wireObject 把线上的 JSON 对象读成成员表：成员名区分大小写；不是对象（含 null）即失败；同一层出现重复的成员名不合法，
+// 不取第一个也不取最后一个（ADR-0235），对象里嵌套的值（value、details、inner）一并核对
 func wireObject(data []byte, what string) (map[string]json.RawMessage, error) {
+	if name, found, _ := jsonstrict.DuplicateMember(data); found {
+		return nil, wireError(fmt.Sprintf("%s on the wire has the member '%s' more than once in the same object", what, name), nil)
+	}
 	var members map[string]json.RawMessage
 	if err := json.Unmarshal(data, &members); err != nil || members == nil {
 		return nil, wireError(what+" on the wire must be a JSON object", err)

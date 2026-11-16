@@ -99,3 +99,25 @@ func decodeInto[T any](data []byte) error {
 	var result primitives.Result[T]
 	return json.Unmarshal(data, &result)
 }
+
+// TestDuplicateMembersAreRejected 核对 Result 与 Error 同一层的重复成员名不合法，不取第一个也不取最后一个（ADR-0235）
+func TestDuplicateMembersAreRejected(t *testing.T) {
+	for _, data := range []string{
+		`{"ok":true,"ok":false}`,
+		`{"ok":true,"value":1,"value":2}`,
+		`{"ok":false,"error":{"code":"KERNEL_UNEXPECTED_001","message":"a"},"error":{"code":"KERNEL_UNEXPECTED_001","message":"b"}}`,
+		`{"ok":false,"error":{"code":"KERNEL_UNEXPECTED_001","code":"KERNEL_NOTFOUND_001","message":"x"}}`,
+		`{"ok":true,"value":{"id":1,"id":2}}`,
+	} {
+		if err := decodeInto[any]([]byte(data)); err == nil {
+			t.Errorf("%s must be rejected", data)
+		}
+	}
+	var failure primitives.Error
+	if err := json.Unmarshal([]byte(`{"code":"KERNEL_UNEXPECTED_001","message":"x","inner":{"code":"KERNEL_UNEXPECTED_001","message":"a","message":"b"}}`), &failure); err == nil {
+		t.Error("a duplicate member in the inner error must be rejected")
+	}
+	if err := json.Unmarshal([]byte(`{"code":"KERNEL_UNEXPECTED_001","message":"x","details":{"a":1,"a":2}}`), &failure); err == nil {
+		t.Error("a duplicate member in the details must be rejected")
+	}
+}
