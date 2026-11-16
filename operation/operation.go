@@ -66,7 +66,7 @@ func init() {
 }
 
 // InvalidPayload 创建载荷不合法的错误（KERNEL_VALIDATION_001）：reason 是出错位置的 JSON 路径（如 $.quantity、$），
-// 不带目标类型名（RFC-0011 规则 2）；JSON null 的载荷 reason 是 the payload is null
+// 不带目标类型名（RFC-0011 规则 2）；载荷是 null、不是对象或根上就不合时 reason 是 $
 func InvalidPayload(id, reason string) *primitives.Error {
 	return primitives.Validation(ErrorCodeInvalidPayload, MessageInvalidPayload, map[string]any{"id": id, "reason": reason})
 }
@@ -240,11 +240,13 @@ func decode[Req any](id string, payload []byte) (Req, *primitives.Error) {
 	if len(trimmed) == 0 {
 		trimmed = []byte("{}")
 	}
+	// JSON null 不是请求对象：载荷不合法，reason 写 $（ADR-0235，旧版写 the payload is null）
 	if bytes.Equal(trimmed, []byte("null")) {
-		return request, InvalidPayload(id, "the payload is null")
+		return request, InvalidPayload(id, "$")
 	}
-	if err := json.Unmarshal(trimmed, &request); err != nil {
-		return request, InvalidPayload(id, payloadPath(trimmed, err))
+	err := json.Unmarshal(trimmed, &request)
+	if path, invalid := payloadPath(trimmed, reflect.TypeFor[Req](), err); invalid {
+		return *new(Req), InvalidPayload(id, path)
 	}
 	return request, nil
 }

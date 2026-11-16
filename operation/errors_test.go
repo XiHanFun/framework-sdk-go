@@ -84,8 +84,8 @@ func TestInvalidPayloadReasonIsOnlyAPath(t *testing.T) {
 		payload string
 		reason  string
 	}{
-		{invoker, "orders.create", `null`, "the payload is null"},
-		{invoker, "orders.create", ` null `, "the payload is null"},
+		{invoker, "orders.create", `null`, "$"},
+		{invoker, "orders.create", ` null `, "$"},
 		{invoker, "orders.create", `[1]`, "$"},
 		{invoker, "orders.create", `{`, "$"},
 		{invoker, "orders.create", `"text"`, "$"},
@@ -97,9 +97,20 @@ func TestInvalidPayloadReasonIsOnlyAPath(t *testing.T) {
 		{bulk, "orders.bulk", `{"lines":[1]}`, "$.lines[0]"},
 		{bulk, "orders.bulk", `{"labels":{"a b":{"quantity":true}}}`, "$.labels['a b'].quantity"},
 		{bulk, "orders.bulk", `{"labels":{"main":{"quantity":[]}}}`, "$.labels.main.quantity"},
+		{bulk, "orders.bulk", `{"labels":{"a'b":{"quantity":true}}}`, "$.labels['a'b'].quantity"},
+		{invoker, "orders.create", `{"quantity":null}`, "$.quantity"},
+		{bulk, "orders.bulk", `{"lines":[{"quantity":null}],"labels":{"x":{"quantity":"bad"}}}`, "$.lines[0].quantity"},
+		{bulk, "orders.bulk", `{"labels":{"x":{"quantity":"bad"}},"lines":[{"quantity":null}]}`, "$.labels.x.quantity"},
+		{bulk, "orders.bulk", `{"lines":null,"labels":null}`, ""},
 	}
 	for _, c := range cases {
 		response := c.invoker.Invoke(invocation.Background(), operation.Request{ID: c.id, Payload: []byte(c.payload)})
+		if c.reason == "" {
+			if !response.Outcome.OK() {
+				t.Errorf("%s must be accepted: %v", c.payload, response.Outcome)
+			}
+			continue
+		}
 		assertError(t, response.Outcome.Err(), "KERNEL_VALIDATION_001", "kernel.operation.invalid_payload", map[string]any{"id": c.id, "reason": c.reason},
 			fmt.Sprintf("The payload of operation '%s' is not valid: %s", c.id, c.reason))
 	}
