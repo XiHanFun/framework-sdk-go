@@ -1,9 +1,9 @@
 package primitives
 
 import (
-	"encoding/json"
 	"fmt"
 
+	"github.com/xihanfun/framework-sdk-go/internal/jsoncodec"
 	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
 )
 
@@ -139,19 +139,32 @@ func (e *Error) Is(target error) bool {
 	return ok && other.Code == e.Code
 }
 
-// errorJSON 是 Error 的线上编码（RFC-0001）：成员按 code、message、messageKey、details、inner 的顺序写出；
-// message 总是写出，messageKey 只在有键时写（Literal 没有键），details 为空、inner 没有时不写
-type errorJSON struct {
-	Code       string         `json:"code"`
-	Message    string         `json:"message"`
-	MessageKey string         `json:"messageKey,omitempty"`
-	Details    map[string]any `json:"details,omitempty"`
-	Inner      *Error         `json:"inner,omitempty"`
-}
-
-// MarshalJSON 实现线上编码：message 是发送端已解析的文案，messageKey 让接收端可再翻译
+// MarshalJSON 实现线上编码（RFC-0001）：成员按 code、message、messageKey、details、inner 的顺序写出；message 是发送端已解析的文案，
+// 总是写出；messageKey 只在有键时写（Literal 没有键），让接收端可再翻译；details 为空、inner 没有时不写。细节按值模型写出：
+// 整数值的浮点带小数点，非有限值写成字符串，64 位范围内的整数原样（ADR-0236）
 func (e *Error) MarshalJSON() ([]byte, error) {
-	return json.Marshal(errorJSON{Code: e.Code, Message: e.Message(), MessageKey: e.MessageKey, Details: e.Details, Inner: e.Inner})
+	encoded := append([]byte(`{"code":`), jsontext.AppendString(nil, e.Code)...)
+	encoded = append(encoded, `,"message":`...)
+	encoded = jsontext.AppendString(encoded, e.Message())
+	if e.MessageKey != "" {
+		encoded = append(encoded, `,"messageKey":`...)
+		encoded = jsontext.AppendString(encoded, e.MessageKey)
+	}
+	if len(e.Details) > 0 {
+		details, err := jsoncodec.Marshal(e.Details)
+		if err != nil {
+			return nil, err
+		}
+		encoded = append(append(encoded, `,"details":`...), details...)
+	}
+	if e.Inner != nil {
+		inner, err := e.Inner.MarshalJSON()
+		if err != nil {
+			return nil, err
+		}
+		encoded = append(append(encoded, `,"inner":`...), inner...)
+	}
+	return append(encoded, '}'), nil
 }
 
 // UnmarshalJSON 从线上编码还原（RFC-0001）：先过共同的 JSON 读取检查；code 必填且合法；message 必填、是非空字符串；messageKey 有就必须合法；
@@ -195,9 +208,8 @@ func decodeError(data []byte, root *jsontext.Value) (*Error, error) {
 		if details.Kind != jsontext.Object {
 			return nil, wireError("the member 'details' of an error must be a JSON object", nil)
 		}
-		if err := json.Unmarshal(raw(data, details), &decoded.Details); err != nil {
-			return nil, wireError("the member 'details' of an error could not be decoded", err)
-		}
+		// 细节按值模型读：64 位范围内整数写法的数字是 int64，其余是 float64（ADR-0236）
+		decoded.Details = jsoncodec.FromJSON(details).(map[string]any)
 	}
 	if inner, has := root.Find("inner"); has {
 		nested, err := decodeError(data, inner)

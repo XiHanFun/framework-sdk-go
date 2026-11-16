@@ -2,22 +2,24 @@ package plugin
 
 import (
 	"context"
-	"encoding/json"
+
 	"time"
 
+	"github.com/xihanfun/framework-sdk-go/internal/jsoncodec"
+	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
 	"github.com/xihanfun/framework-sdk-go/invocation"
 	pluginv1 "github.com/xihanfun/framework-sdk-go/plugin/v1"
 	"github.com/xihanfun/framework-sdk-go/primitives"
 )
 
-// ToProtoError 把原语层错误编码为协议的 Error：details 是 JSON 对象文本，inner 递归。
+// ToProtoError 把原语层错误编码为协议的 Error：details 是按值模型写出的 JSON 对象文本（整数值的浮点带小数点，非有限值写成字符串，ADR-0236），inner 递归。
 func ToProtoError(err *primitives.Error) *pluginv1.Error {
 	if err == nil {
 		return nil
 	}
 	encoded := &pluginv1.Error{Code: err.Code, MessageKey: err.MessageKey, Text: err.Message()}
 	if len(err.Details) > 0 {
-		if details, marshalErr := json.Marshal(err.Details); marshalErr == nil {
+		if details, marshalErr := jsoncodec.Marshal(err.Details); marshalErr == nil {
 			encoded.Details = string(details)
 		}
 	}
@@ -27,14 +29,17 @@ func ToProtoError(err *primitives.Error) *pluginv1.Error {
 	return encoded
 }
 
-// FromProtoError 把协议的 Error 还原为原语层错误；码不合法时换成 PLUGINS_UNEXPECTED_001 并保留原码在细节里。
+// FromProtoError 把协议的 Error 还原为原语层错误；details 按值模型读（64 位范围内整数写法的数字是 int64，其余是 float64，数组与对象是 []any 与 map[string]any，ADR-0236），
+// 不是合法的 JSON 对象时没有细节；码不合法时换成 PLUGINS_UNEXPECTED_001 并保留原码在细节里。
 func FromProtoError(err *pluginv1.Error) *primitives.Error {
 	if err == nil {
 		return nil
 	}
 	var details map[string]any
 	if err.Details != "" {
-		_ = json.Unmarshal([]byte(err.Details), &details)
+		if root, problem := jsontext.Parse([]byte(err.Details)); problem == nil && root.Kind == jsontext.Object {
+			details = jsoncodec.FromJSON(root).(map[string]any)
+		}
 	}
 	code := err.Code
 	if !primitives.IsErrorCode(code) {

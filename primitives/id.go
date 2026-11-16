@@ -1,6 +1,6 @@
 package primitives
 
-import "encoding/json"
+import "github.com/xihanfun/framework-sdk-go/internal/jsoncodec"
 
 // ID 是类型化标识（RFC-0001 TypedId）：Tag 只用于区分类型，不承载数据；线上编码为底层值的编码。
 type ID[Tag any, V comparable] struct {
@@ -12,7 +12,7 @@ type ID[Tag any, V comparable] struct {
 func NewID[Tag any, V comparable](value V) ID[Tag, V] { return ID[Tag, V]{Value: value} }
 
 // MarshalJSON 编码为底层值。
-func (id ID[Tag, V]) MarshalJSON() ([]byte, error) { return json.Marshal(id.Value) }
+func (id ID[Tag, V]) MarshalJSON() ([]byte, error) { return jsoncodec.Marshal(id.Value) }
 
 // UnmarshalJSON 从底层值还原。
-func (id *ID[Tag, V]) UnmarshalJSON(data []byte) error { return json.Unmarshal(data, &id.Value) }
+func (id *ID[Tag, V]) UnmarshalJSON(data []byte) error { return jsoncodec.Unmarshal(data, &id.Value) }

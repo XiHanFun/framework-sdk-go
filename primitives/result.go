@@ -1,9 +1,9 @@
 package primitives
 
 import (
-	"encoding/json"
 	"fmt"
 
+	"github.com/xihanfun/framework-sdk-go/internal/jsoncodec"
 	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
 )
 
@@ -119,7 +119,7 @@ func isMaybe[T any]() bool {
 // 失败 {"ok":false,"error":{…}}；值编码成 null 而值类型不是 Maybe 时报错，可能没有的值用 Maybe
 func (r Result[T]) MarshalJSON() ([]byte, error) {
 	if !r.ok {
-		encoded, err := json.Marshal(r.Err())
+		encoded, err := r.Err().MarshalJSON()
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +128,8 @@ func (r Result[T]) MarshalJSON() ([]byte, error) {
 	if isUnit[T]() {
 		return []byte(`{"ok":true}`), nil
 	}
-	encoded, err := json.Marshal(r.value)
+	// 值按值模型写出：整数值的浮点带小数点，非有限值写成字符串（RFC-0001「Result」，ADR-0236）
+	encoded, err := jsoncodec.Marshal(r.value)
 	if err != nil {
 		return nil, err
 	}
@@ -185,8 +186,8 @@ func (r *Result[T]) UnmarshalJSON(data []byte) error {
 		return wireError("the value of a successful result must not be null unless it is a Maybe", nil)
 	}
 	var decoded T
-	if err := json.Unmarshal(raw(data, value), &decoded); err != nil {
-		return wireError("the value of a successful result could not be decoded", err)
+	if problem := jsoncodec.Decode(data, value, &decoded); problem != nil {
+		return wireError("the value of a successful result does not match its type at '"+problem.Path+"'", problem.Cause)
 	}
 	*r = Ok(decoded)
 	return nil

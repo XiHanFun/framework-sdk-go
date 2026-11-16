@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -641,5 +642,25 @@ func TestParseEndpoint(t *testing.T) {
 		if _, ok := ParseEndpoint(bad); ok {
 			t.Errorf("%q must not parse", bad)
 		}
+	}
+}
+
+// TestProtoErrorDetailsFollowTheValueModel 核对插件协议的错误细节按值模型读写（ADR-0236）：整数值的浮点带小数点，
+// 超出 int64 的整数按浮点写，非有限值写成字符串；读回时 64 位范围内的整数是 int64，数组与对象是 []any 与 map[string]any
+func TestProtoErrorDetailsFollowTheValueModel(t *testing.T) {
+	err := primitives.Literal("ORDERS_UNEXPECTED_001", "x", map[string]any{"f": 2.0, "n": int64(9007199254740993), "nan": math.NaN(), "u": uint64(math.MaxUint64), "list": []any{1, "a"}}, nil)
+	encoded := ToProtoError(err)
+	if want := `{"f":2.0,"list":[1,"a"],"n":9007199254740993,"nan":"NaN","u":1.8446744073709552E+19}`; encoded.Details != want {
+		t.Errorf("details %s, want %s", encoded.Details, want)
+	}
+	decoded := FromProtoError(encoded)
+	if decoded.Details["f"] != 2.0 || decoded.Details["n"] != int64(9007199254740993) || decoded.Details["nan"] != "NaN" {
+		t.Errorf("decoded %#v", decoded.Details)
+	}
+	if list, ok := decoded.Details["list"].([]any); !ok || list[0] != int64(1) || list[1] != "a" {
+		t.Errorf("list %#v", decoded.Details["list"])
+	}
+	if broken := FromProtoError(&pluginv1.Error{Code: "ORDERS_UNEXPECTED_001", Text: "x", Details: `{"a":1,"a":2}`}); broken.Details != nil {
+		t.Errorf("details that are not valid JSON are dropped, got %#v", broken.Details)
 	}
 }

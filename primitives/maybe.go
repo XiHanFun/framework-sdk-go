@@ -1,6 +1,6 @@
 package primitives
 
-import "encoding/json"
+import "github.com/xihanfun/framework-sdk-go/internal/jsoncodec"
 
 // Maybe 是可能没有的值（RFC-0001 Maybe<T>）；零值即无值。线上编码：有值为值本身，无值为 null。
 type Maybe[T any] struct {
@@ -68,7 +68,7 @@ func (m Maybe[T]) MarshalJSON() ([]byte, error) {
 	if !m.has {
 		return []byte("null"), nil
 	}
-	return json.Marshal(m.value)
+	return jsoncodec.Marshal(m.value)
 }
 
 // UnmarshalJSON 从线上编码还原：null 为无值。
@@ -78,7 +78,7 @@ func (m *Maybe[T]) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	var value T
-	if err := json.Unmarshal(data, &value); err != nil {
+	if err := jsoncodec.Unmarshal(data, &value); err != nil {
 		return err
 	}
 	*m = Some(value)

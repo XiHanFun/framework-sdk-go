@@ -77,6 +77,8 @@ response := invoker.Invoke(ctx, operation.Request{ID: "orders.create", Payload: 
 
 读取的 JSON 文本（`Result` 与 `Error` 的线上编码、操作载荷、清单）先过同一遍检查（RFC-0001「JSON 文本」，ADR-0236）：语法按 RFC 8259（没有注释、尾逗号、单引号、`NaN` / `Infinity`、前导零、正号与多个根值，空文本与只有空白也不是 JSON），文本是 UTF-8，开头的 BOM 是语法错误；嵌套不超过 64 层（最外层是第 1 层）；字符串与成员名必须是合法的 Unicode，非法 UTF-8、过长编码、编码成 UTF-8 的代理项、原始控制字符、非法转义与孤立的代理项转义都拒绝；任何一层都不能有重复的成员名，名字按转义还原后比较（`"a"` 与 `"\u0061"` 重复），大小写不同不算重复。语法错误优先，位置只写 `$`；否则报第一处重复（第二次出现的成员）的路径。`encoding/json` 不查重复成员、把孤立的代理项换成 U+FFFD、嵌套上限是 10000，这一步由 SDK 内部的检查（`internal/jsontext`）先做，与一致性模块的 `rules.CheckJSONText` 回放同一份 `json-text.json`。
 
+线上的数字按值模型往返（RFC-0001「Result」与 RFC-0010「模板」的值模型，ADR-0236）：`Result` 的值与 `Error` 的 `details`（插件协议 `Error.details` 的 JSON 文本也一样）读进 `any` 时，64 位有符号范围内整数写法的数字是 `int64`，原样往返（`9007199254740993` 不会变成 `9007199254740992`），其余是 `float64`，`1e400` 为无穷；写出时整数值的浮点带小数点（`2.0`、`-0.0`，范围外如 `1E+17`），对方读回的仍是浮点，`float32` 先换成最接近的 `float64`（`float32(0.1)` 写 `0.10000000149011612`），超出 `int64` 的无符号整数按浮点写，`NaN` 与无穷写成字符串 `"NaN"`、`"Infinity"`、`"-Infinity"`。字符串只转义必须转义的字符（`"`、`\`、控制字符），`<`、`>`、`&` 与非 ASCII 原样。类型化的值（`Result[Order]`、`Maybe[T]`、`ID[Tag, V]`）按与操作载荷相同的规则解码，见下文「操作载荷」。
+
 ## 破坏性改动与迁移
 
 本节列出与规范、.NET 参考实现对齐时改掉的旧行为，以及调用方怎么改。
@@ -103,6 +105,7 @@ response := invoker.Invoke(ctx, operation.Request{ID: "orders.create", Payload: 
 - 消息参数的文本形式改由 `primitives.FormatValue` 统一（模板与 `Describe` 共用，RFC-0010）：`nil` 与 `nil` 指针写空串，旧版写 `<nil>`；浮点在 1e-4 ≤ |x| < 1e17 或 x = 0 时写最短往返的十进制、不用指数，`2.0` 写 `2`、1e16 写 `10000000000000000`；范围之外写 `1E+17`、`9.9E-05`、`5E-324` 这样的指数形式，负零写 `-0`，非数与无穷写 `NaN`、`Infinity`、`-Infinity`（ADR-0235）。F 与 N 写出全部整数位，负数舍入成零时保留负号（`-0.00`）。依赖旧文本（如在日志里匹配 `<nil>`）的地方要改。
 - `Result` 与 `Error` 里同一层的重复成员名不合法（ADR-0235），旧版由 `encoding/json` 取最后一个。`Error` 读取更严：`details` 为 `null` 或数组、`inner` 为 `null`、`messageKey` 不合文法（含空串）、`message` 缺失、为空串或不是字符串时 `json.Unmarshal` 返回 `PRIMITIVES_VALIDATION_001`，旧版会静默忽略。发送端按上面的编码写即可；`messageKey` 为空时不写这个成员。
 - JSON 文本的共同读取检查（RFC-0001「JSON 文本」，ADR-0236）：`Result` 与 `Error` 读取时开头的 BOM、嵌套超过 64 层、孤立的代理项转义（`"\ud800"`）与非法 UTF-8 都拒绝，旧版由 `encoding/json` 接受（孤立的代理项换成 U+FFFD）。操作载荷先过同一遍检查：语法错误（含 BOM、嵌套超过 64 层、孤立的代理项）的 `reason` 一律 `$`；任何一层的重复成员是 `KERNEL_VALIDATION_001`，`reason` 是第一处重复的路径，先于其他问题（旧版 `encoding/json` 取最后一个）；只有空白的载荷不再等价于 `{}`（空载荷仍等价于 `{}`），按语法错误处理。`manifest.Read` 同样拒绝这些写法。迁移：发送合法的 UTF-8 JSON，不在文本前加 BOM，生成 JSON 的代码去掉重复成员。
+- 线上的数字按值模型往返（ADR-0236）：`Result[any]`、`Result[map[string]any]` 的值与 `Error.Details` 里的整数读成 `int64`，旧版由 `encoding/json` 读成 `float64`（超过 2^53 的整数因此失真）；整数值的浮点写成 `2.0`、`-0.0`（旧版写 `2`、`-0`，对方读成整数）；`NaN` 与无穷写成字符串（旧版 `json.Marshal` 报错，整个 `Result` 写不出）。插件协议的 `Error.details` 照同一模型读写，读回的数组与对象是 `[]any` 与 `map[string]any`，不是合法 JSON 对象的细节丢弃。`Result`、`Maybe`、`ID` 的类型化值改用 SDK 的解码：成员名区分大小写（旧版 `"Count"` 也能读进 `count`）、整数不接受 `1.0`、整数与布尔不接受 `null`、数字不从字符串读。迁移：按 `float64` 断言细节里整数的代码改为同时接受 `int64`（或用 `primitives.FormatValue` 取文本）；发送端照字段的 JSON 名字写成员。
 
 ## 开发
 

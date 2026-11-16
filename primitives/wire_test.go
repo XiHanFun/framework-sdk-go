@@ -3,6 +3,7 @@ package primitives_test
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -152,5 +153,46 @@ func TestWireReadingRunsTheCommonJSONCheck(t *testing.T) {
 		if err := failure.UnmarshalJSON([]byte(data)); err == nil {
 			t.Errorf("%q must be rejected", data)
 		}
+	}
+}
+
+// TestWireNumbersFollowTheValueModel 核对线上的数字按值模型往返（RFC-0001「Result」，ADR-0236）：64 位范围内的整数精确往返，
+// 整数值的浮点写出时仍是浮点（2.0、-0.0），非有限值写成字符串
+func TestWireNumbersFollowTheValueModel(t *testing.T) {
+	cases := map[string]string{
+		`{"ok":true,"value":{"m":-9223372036854775808,"n":9007199254740993}}`: `{"ok":true,"value":{"m":-9223372036854775808,"n":9007199254740993}}`,
+		`{"ok":true,"value":[2.0,-0.0,2,1e17,0.5]}`:                           `{"ok":true,"value":[2.0,-0.0,2,1E+17,0.5]}`,
+	}
+	for data, want := range cases {
+		var result primitives.Result[any]
+		if err := json.Unmarshal([]byte(data), &result); err != nil {
+			t.Fatalf("%s: %v", data, err)
+		}
+		encoded, err := json.Marshal(result)
+		if err != nil || string(encoded) != want {
+			t.Errorf("%s: %s (%v), want %s", data, encoded, err, want)
+		}
+	}
+	var typed primitives.Result[map[string]any]
+	if err := json.Unmarshal([]byte(`{"ok":true,"value":{"n":9007199254740993}}`), &typed); err != nil || typed.Must()["n"] != int64(9007199254740993) {
+		t.Errorf("typed value %v (%v)", typed, err)
+	}
+	failure := primitives.Literal("KERNEL_UNEXPECTED_001", "x", map[string]any{"f": 2.0, "z": math.Copysign(0, -1), "e": 1e17, "n": 2, "nan": math.NaN(), "big": uint64(math.MaxUint64)}, nil)
+	encoded, err := json.Marshal(failure)
+	if want := `{"code":"KERNEL_UNEXPECTED_001","message":"x","details":{"big":1.8446744073709552E+19,"e":1E+17,"f":2.0,"n":2,"nan":"NaN","z":-0.0}}`; err != nil || string(encoded) != want {
+		t.Errorf("details %s (%v), want %s", encoded, err, want)
+	}
+	var decoded primitives.Error
+	if err := json.Unmarshal([]byte(`{"code":"KERNEL_UNEXPECTED_001","message":"x","details":{"n":9007199254740993,"f":2.0}}`), &decoded); err != nil || decoded.Details["n"] != int64(9007199254740993) || decoded.Details["f"] != 2.0 {
+		t.Errorf("decoded details %#v (%v)", decoded.Details, err)
+	}
+	var strict primitives.Result[struct {
+		Count int `json:"count"`
+	}]
+	if err := json.Unmarshal([]byte(`{"ok":true,"value":{"Count":"x"}}`), &strict); err != nil || strict.Must().Count != 0 {
+		t.Errorf("member names of a typed value are case-sensitive: %v (%v)", strict, err)
+	}
+	if err := json.Unmarshal([]byte(`{"ok":true,"value":{"count":1.5}}`), &strict); err == nil {
+		t.Error("1.5 is not an integer")
 	}
 }
