@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/xihanfun/framework-sdk-go/primitives"
@@ -118,7 +119,13 @@ func TestPortableFormatSpecifiers(t *testing.T) {
 		{math.Inf(1), "N", "Infinity"},
 		{42, "yyyy-MM-dd", "42"},
 		{0.5, "P2", "0.5"},
-		{7, "d3", "7"},
+		{7, "d3", "007"},
+		{2.25, "f1", "2.2"},
+		{1234, "n0", "1,234"},
+		{255, "X4", "00FF"},
+		{-42, "D5", "-00042"},
+		{0.3333333333333333, "F12", "0.333333333333"},
+		{1, "F99", "1." + strings.Repeat("0", 99)},
 		{7, "D3x", "7"},
 		{7, "D1000", "7"},
 		{7, "", "7"},

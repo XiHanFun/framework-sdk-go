@@ -112,7 +112,7 @@ func render(template string, arguments map[string]any, strict bool) (string, boo
 	return builder.String(), true
 }
 
-// FormatArgument 按格式说明符写一个参数（RFC-0010 的可移植子集）：
+// FormatArgument 按格式说明符写一个参数（RFC-0010 的可移植子集；D、F、N 不区分大小写，d3 等同 D3，精度 0–99 必须支持）：
 //   - D[n]：整数，最少 n 位，补零，负号在前
 //   - X[n] / x[n]：非负整数的大写 / 小写十六进制，最少 n 位
 //   - F[n]：定点小数，n 位小数，缺省 2
@@ -149,13 +149,18 @@ func FormatArgument(value any, format string) string {
 	return FormatValue(value)
 }
 
-// parseFormat 解析可移植子集的说明符：一个字母（D、X、x、F、N）后跟可选的十进制精度；精度缺省为 -1
+// parseFormat 解析可移植子集的说明符：一个字母后跟可选的十进制精度，精度缺省为 -1。D、F、N 不区分大小写（与 .NET 一致），
+// 返回大写；X 与 x 分别是大写与小写的十六进制，原样返回
 func parseFormat(format string) (byte, int, bool) {
-	if format == "" || !strings.ContainsRune("DXxFN", rune(format[0])) {
+	if format == "" || !strings.ContainsRune("DdXxFfNn", rune(format[0])) {
 		return 0, 0, false
 	}
+	specifier := format[0]
+	if specifier == 'd' || specifier == 'f' || specifier == 'n' {
+		specifier -= 'a' - 'A'
+	}
 	if len(format) == 1 {
-		return format[0], -1, true
+		return specifier, -1, true
 	}
 	digits := format[1:]
 	for index := 0; index < len(digits); index++ {
@@ -167,7 +172,7 @@ func parseFormat(format string) (byte, int, bool) {
 	if err != nil || precision > maxFormatPrecision {
 		return 0, 0, false
 	}
-	return format[0], precision, true
+	return specifier, precision, true
 }
 
 // padDigits 写整数的 base 进制数字，不足 precision 位时补零，负号在前
