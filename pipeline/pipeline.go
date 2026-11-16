@@ -23,6 +23,9 @@ const (
 // AppOwner 是应用自己注册的中间件的归属。
 const AppOwner = "app"
 
+// KernelOwner 是内核内置中间件的归属（xihan.kernel.core 的清单 ID）：operation.Invoker 的三个内置步骤按它放在所在阶段的 Beginning（RFC-0011 规则 10）
+const KernelOwner = "xihan.kernel.core"
+
 // Step 是管道里的一步：中间件调用它进入下游。
 type Step func(ctx *invocation.Context) primitives.Result[primitives.Unit]
 
@@ -114,6 +117,22 @@ type Builder struct {
 
 // NewBuilder 创建空的构建器。
 func NewBuilder() *Builder { return &Builder{} }
+
+// Clone 复制构建器：登记与约束各自独立，往副本里登记不影响原来的构建器（operation.NewInvoker 在副本里加内置步骤）
+func (b *Builder) Clone() *Builder {
+	clone := &Builder{registrations: make([]*registration, 0, len(b.registrations)), constraints: make([]constraint, 0, len(b.constraints))}
+	copies := make(map[*registration]*registration, len(b.registrations))
+	for _, original := range b.registrations {
+		duplicate := *original
+		copies[original] = &duplicate
+		clone.registrations = append(clone.registrations, &duplicate)
+	}
+	for _, original := range b.constraints {
+		original.subject = copies[original.subject]
+		clone.constraints = append(clone.constraints, original)
+	}
+	return clone
+}
 
 // Use 登记中间件到 transaction 阶段末尾（RFC-0004 规则 4）。
 func (b *Builder) Use(middleware Middleware) *Builder {

@@ -2,6 +2,7 @@ package operation_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,13 +12,15 @@ import (
 	"github.com/xihanfun/framework-sdk-go/primitives"
 )
 
-// TestDeadlineBeforeStartSkipsThePipeline 核对调用开始时截止时间已过：KERNEL_TIMEOUT_001 + kernel.invocation.deadline_before_start，不进管道
-func TestDeadlineBeforeStartSkipsThePipeline(t *testing.T) {
-	entered := false
-	builder := pipeline.NewBuilder().UseAt(pipeline.Func("Observe", func(ctx *invocation.Context, next pipeline.Step) primitives.Result[primitives.Unit] {
-		entered = true
-		return next(ctx)
-	}), primitives.Observe, pipeline.End, "")
+// TestDeadlineBeforeStartStopsAtTheResilienceStage 核对截止时间在 Resilience 阶段核对（RFC-0011 规则 10，ADR-0236）：进入时已到即
+// KERNEL_TIMEOUT_001 + kernel.invocation.deadline_before_start，Ingress 与 Observe 阶段的中间件照常执行，后面的中间件与处理器不执行
+func TestDeadlineBeforeStartStopsAtTheResilienceStage(t *testing.T) {
+	var log []string
+	builder := pipeline.NewBuilder().
+		UseAt(marker("Ingress", &log), primitives.Ingress, pipeline.End, "").
+		UseAt(marker("Observe", &log), primitives.Observe, pipeline.End, "").
+		UseAt(marker("Retry", &log), primitives.Resilience, pipeline.End, "").
+		UseAt(marker("Authorize", &log), primitives.Authorize, pipeline.End, "")
 	invoker := newInvoker(t, builder)
 	expired := invocation.Background(invocation.WithDeadline(time.Now().Add(-time.Second)))
 
@@ -25,8 +28,14 @@ func TestDeadlineBeforeStartSkipsThePipeline(t *testing.T) {
 	assertError(t, response.Outcome.Err(), "KERNEL_TIMEOUT_001", "kernel.invocation.deadline_before_start", nil, "The invocation exceeded its deadline before it started.")
 	typed := operation.Invoke[createOrder, orderCreated](invoker, expired, "orders.create", createOrder{Quantity: 1})
 	assertError(t, typed.Err(), "KERNEL_TIMEOUT_001", "kernel.invocation.deadline_before_start", nil, "The invocation exceeded its deadline before it started.")
-	if entered {
-		t.Error("an expired invocation must not enter the pipeline")
+	if strings.Join(log, ",") != "Ingress,Observe,Ingress,Observe" {
+		t.Errorf("only the stages before Resilience run: %v", log)
+	}
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	log = nil
+	if response := invoker.Invoke(invocation.New(parent), operation.Request{ID: "orders.create", Payload: []byte(`{"quantity":1}`)}); !response.Outcome.OK() || len(log) != 4 {
+		t.Errorf("cancellation is not checked on entry: %v %v", response.Outcome, log)
 	}
 }
 
