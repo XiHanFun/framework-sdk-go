@@ -54,7 +54,7 @@ func Unmarshal(data []byte, target any) error {
 //   - null：字符串、结构体、切片、数组、映射、指针与接口接受，等于没有值；整数、浮点与布尔不接受
 //   - 带 xihan:"required" 标签的成员缺少时在所在对象结束时报该对象的路径；值为 null 也算出现
 //   - 按文本顺序报第一处问题；实现 json.Unmarshaler 的类型拿到原文自己解码，实现 encoding.TextUnmarshaler 的类型拿到字符串
-//   - 空接口按值模型（整数写法在 64 位范围内为 int64，其余数字为 float64）
+//   - 空接口是任意 JSON，原样保留读到的值（Preserve）：数字是原文的 json.Number，写回时与读到的 JSON 值相等（RFC-0011 规则 2，ADR-0236）
 func Decode(data []byte, value *jsontext.Value, target any) *Problem {
 	pointer := reflect.ValueOf(target)
 	if pointer.Kind() != reflect.Pointer || pointer.IsNil() {
@@ -146,7 +146,11 @@ func (d *decoder) value(value *jsontext.Value, target reflect.Value, path string
 		if target.NumMethod() != 0 {
 			return &Problem{Path: path}
 		}
-		target.Set(reflect.ValueOf(FromJSON(value)))
+		if decoded := Preserve(value); decoded != nil {
+			target.Set(reflect.ValueOf(decoded))
+		} else {
+			target.SetZero()
+		}
 	case reflect.Slice:
 		return d.slice(value, target, path)
 	case reflect.Array:

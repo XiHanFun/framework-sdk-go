@@ -114,7 +114,33 @@ func TestPayloadsDecodeByTheRequestType(t *testing.T) {
 		assertReason(t, invoker, c.id, c.payload, c.reason)
 	}
 	response := invoker.Invoke(invocation.Background(), operation.Request{ID: "profiles.post", Payload: []byte(`{"name":"a","meta":{"n":9007199254740993,"f":2.0}}`)})
-	if !response.Outcome.OK() || string(response.Payload) != `{"name":"a","note":"","count":0,"ratio":0,"flag":false,"tags":null,"scores":null,"inner":null,"meta":{"f":2,"n":9007199254740993}}` {
+	if !response.Outcome.OK() || string(response.Payload) != `{"name":"a","note":"","count":0,"ratio":0,"flag":false,"tags":null,"scores":null,"inner":null,"meta":{"f":2.0,"n":9007199254740993}}` {
 		t.Errorf("response %v %s", response.Outcome, response.Payload)
+	}
+}
+
+// TestAnyJSONMembersKeepWhatTheyRead 核对任意 JSON 类型的成员原样保留读到的值（RFC-0011 规则 2，ADR-0236）：处理器原样返回，
+// 响应的 JSON 值与原文相等，1e400 不变成 null 或无穷，超出双精度的整数保持精确，2.0 与 2 的区别保留
+func TestAnyJSONMembersKeepWhatTheyRead(t *testing.T) {
+	type document struct {
+		Meta any `json:"meta"`
+	}
+	registry := operation.NewRegistry()
+	if err := operation.Add(registry, operation.Contract{ID: "documents.echo"}, operation.HandlerFunc[document, document](func(_ *invocation.Context, request document) primitives.Result[document] {
+		return primitives.Ok(request)
+	}), nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	invoker, err := operation.NewInvoker(registry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"meta":{"big":1e400,"exact":9007199254740993,"float":2.0,"int":2,"list":[-0.0,1E+17,"s",null,true]}}`
+	response := invoker.Invoke(invocation.Background(), operation.Request{ID: "documents.echo", Payload: []byte(payload)})
+	if !response.Outcome.OK() {
+		t.Fatal(response.Outcome)
+	}
+	if string(response.Payload) != payload {
+		t.Errorf("response %s, want %s", response.Payload, payload)
 	}
 }

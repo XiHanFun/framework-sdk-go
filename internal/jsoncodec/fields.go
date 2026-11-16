@@ -3,7 +3,7 @@
 //     写出时整数值的浮点带小数点（2.0、-0.0），非有限值写成字符串 NaN、Infinity、-Infinity，往返后仍是同一个值
 //   - 按 Go 类型解码（RFC-0011 规则 2）：成员名区分大小写、未知成员忽略、数字不从字符串读、整数不接受小数点与指数、
 //     超出范围即不符、浮点上溢为无穷；整数、浮点与布尔不接受 null；带 xihan:"required" 的成员缺少时在所在对象结束时报；
-//     按文本顺序报第一处问题的路径
+//     按文本顺序报第一处问题的路径；any 是任意 JSON，数字保留原文（json.Number）
 //
 // 结构体字段的名字、嵌入与 omitempty / omitzero / string 选项照 encoding/json 的规则
 package jsoncodec

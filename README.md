@@ -77,7 +77,7 @@ response := invoker.Invoke(ctx, operation.Request{ID: "orders.create", Payload: 
 
 读取的 JSON 文本（`Result` 与 `Error` 的线上编码、操作载荷、清单）先过同一遍检查（RFC-0001「JSON 文本」，ADR-0236）：语法按 RFC 8259（没有注释、尾逗号、单引号、`NaN` / `Infinity`、前导零、正号与多个根值，空文本与只有空白也不是 JSON），文本是 UTF-8，开头的 BOM 是语法错误；嵌套不超过 64 层（最外层是第 1 层）；字符串与成员名必须是合法的 Unicode，非法 UTF-8、过长编码、编码成 UTF-8 的代理项、原始控制字符、非法转义与孤立的代理项转义都拒绝；任何一层都不能有重复的成员名，名字按转义还原后比较（`"a"` 与 `"\u0061"` 重复），大小写不同不算重复。语法错误优先，位置只写 `$`；否则报第一处重复（第二次出现的成员）的路径。`encoding/json` 不查重复成员、把孤立的代理项换成 U+FFFD、嵌套上限是 10000，这一步由 SDK 内部的检查（`internal/jsontext`）先做，与一致性模块的 `rules.CheckJSONText` 回放同一份 `json-text.json`。
 
-线上的数字按值模型往返（RFC-0001「Result」与 RFC-0010「模板」的值模型，ADR-0236）：`Result` 的值与 `Error` 的 `details`（插件协议 `Error.details` 的 JSON 文本也一样）读进 `any` 时，64 位有符号范围内整数写法的数字是 `int64`，原样往返（`9007199254740993` 不会变成 `9007199254740992`），其余是 `float64`，`1e400` 为无穷；写出时整数值的浮点带小数点（`2.0`、`-0.0`，范围外如 `1E+17`），对方读回的仍是浮点，`float32` 先换成最接近的 `float64`（`float32(0.1)` 写 `0.10000000149011612`），超出 `int64` 的无符号整数按浮点写，`NaN` 与无穷写成字符串 `"NaN"`、`"Infinity"`、`"-Infinity"`。字符串只转义必须转义的字符（`"`、`\`、控制字符），`<`、`>`、`&` 与非 ASCII 原样。类型化的值（`Result[Order]`、`Maybe[T]`、`ID[Tag, V]`）按与操作载荷相同的规则解码，见下文「操作载荷」。
+线上的数字按值模型往返（RFC-0001「Result」与 RFC-0010「模板」的值模型，ADR-0236）：`Error` 的 `details`（插件协议 `Error.details` 的 JSON 文本也一样）按值模型读时，64 位有符号范围内整数写法的数字是 `int64`，原样往返（`9007199254740993` 不会变成 `9007199254740992`），其余是 `float64`，`1e400` 为无穷；写出时整数值的浮点带小数点（`2.0`、`-0.0`，范围外如 `1E+17`），对方读回的仍是浮点，`float32` 先换成最接近的 `float64`（`float32(0.1)` 写 `0.10000000149011612`），超出 `int64` 的无符号整数按浮点写，`NaN` 与无穷写成字符串 `"NaN"`、`"Infinity"`、`"-Infinity"`。字符串只转义必须转义的字符（`"`、`\`、控制字符），`<`、`>`、`&` 与非 ASCII 原样。类型化的值（`Result[Order]`、`Maybe[T]`、`ID[Tag, V]`）按与操作载荷相同的规则解码，见下文「操作载荷」；`Result[any]` 与值里的 `any` 是任意 JSON，数字读成原文的 `json.Number`，写回时与读到的相同。
 
 ### 操作载荷
 
@@ -89,7 +89,7 @@ response := invoker.Invoke(ctx, operation.Request{ID: "orders.create", Payload: 
 - `null`：字符串、切片、数组、映射、结构体、指针与 `any` 接受，等于没有值（字段保持零值）；整数、浮点与布尔（含它们的切片项与映射值）不接受。要接受 `null` 的数值或布尔写成指针（`*int64`、`*bool`）。
 - 必填：字段带 `xihan:"required"` 标签即必填（对应 C# 的 `required`），缺少时在所在对象结束时报该对象的路径（根上为 `$`，嵌套如 `$.inner`）；只要求成员出现，值为 `null` 也算出现。没有这个标签的成员缺少时取零值。
 - 按文本顺序报第一处问题：写在前面的类型不符先报，嵌套对象里缺少的成员先于外层后面的类型不符。
-- 实现 `json.Unmarshaler` 的类型（`time.Time`、`json.RawMessage` 等）拿到原文自己解码，失败报它的路径；实现 `encoding.TextUnmarshaler` 的类型只接字符串；`any` 按值模型读；`[]byte` 读 base64 字符串。字段名、嵌入结构体的提升与 `json` 标签照 `encoding/json`。
+- 实现 `json.Unmarshaler` 的类型（`time.Time`、`json.RawMessage` 等）拿到原文自己解码，失败报它的路径；实现 `encoding.TextUnmarshaler` 的类型只接字符串；`any` 是任意 JSON，原样保留读到的值：数字读成原文的 `json.Number`（`1e400`、超出双精度的整数、`2.0` 与 `2` 的区别都在），字符串、布尔、`null`、`[]any` 与 `map[string]any` 照常，处理器原样返回时响应的 JSON 值与原文相等；`[]byte` 读 base64 字符串。载荷的文本按 JSON 值比较，空白、成员顺序、转义与数字的写法不是契约。字段名、嵌入结构体的提升与 `json` 标签照 `encoding/json`。
 
 ```go
 type CreateOrder struct {
@@ -98,7 +98,7 @@ type CreateOrder struct {
 	Quantity int32         `json:"quantity"`                   // 可选，不接受 null 与 1.0
 	Discount *float64      `json:"discount"`                   // 可选，接受 null
 	Lines    []OrderLine   `json:"lines"`
-	Extra    any           `json:"extra"`                      // 任意 JSON，按值模型
+	Extra    any           `json:"extra"`                      // 任意 JSON，数字保留原文
 }
 ```
 
@@ -178,6 +178,7 @@ Go 自己的文本（日期、`Duration`、结构体）不跨语言：插件的�
 - 调用器的截止时间、解码与异常翻译改为管道里的内置步骤（RFC-0011 规则 10，ADR-0236，撤销 ADR-0235 的「在第一个中间件之前核对截止时间」）：截止时间已到时 Ingress 与 Observe 阶段的中间件照常执行，到 Resilience 阶段才以 `deadline_before_start` 结束（旧版一个中间件都不执行）；载荷在 Validate 阶段才解码，排在它之前的中间件（认证、租户、授权）的失败先于载荷不合法报出（旧版在处理器之前解码，载荷不合法总是最后才发现，但认证失败的调用也会先解码）；Ingress 阶段与 Observe 阶段 `Beginning` 上归属排在 `xihan.kernel.core` 之前的中间件 panic 原样交给调用方（旧版一律翻译）。管道里不能再登记名为 `ObserveMiddleware`、`DeadlineMiddleware`、`ValidationMiddleware` 的中间件。迁移：需要在截止时间核对之前做的事放在 Ingress 或 Observe 阶段；要被翻译 panic 的中间件放在 Observe 阶段 `End` 或之后；用到原始请求对象的中间件放在 Validate 阶段之后。
 - 清单可选的字符串改为指针（ADR-0236 的补充）：`Manifest.Package`、`Manifest.Entry` 与 `ConfigContribution.Schema` 由 `string` 改为 `*string`，分得清「写了空串」与「没写」，写了空串时 `Write` 照写 `"package": ""`，与 .NET 一致（旧版一律省略空串）。迁移：赋值改为 `Package: manifest.Text("XiHan.Orders")`，读取改为先判 `nil` 再解引用；比较两份清单时比较指向的值。
 - 管道配置错误的消息改为 .NET 的英文原文（RFC-0004 规则 8，ADR-0236 的补充），各语言逐字相同：如 `Middleware ordering constraints in stage 'validate' form a cycle: 'Guard[a]', 'Guard[b]'.`（成环时按基准次序列出全部仍被卡住的中间件，按名字登记的实例写成 `类型名[名字]`；旧版只写阶段）、`The ordering constraint of middleware 'Guard[a]' references unregistered middleware 'zz'.`、`Unknown pipeline stage 'bogus'.`。约束目标改为逐阶段解析，前一阶段成环先于后一阶段的约束目标未登记报出（旧版先解析全部约束）。错误码不变。迁移：按消息文本匹配的地方改为按错误码匹配。
+- 任意 JSON 原样保留读到的值（RFC-0011 规则 2，ADR-0236 的补充）：载荷与 `Result` 值里类型为 `any` 的成员，数字由 `int64` / `float64` 改为原文的 `json.Number`（上一版按值模型读，`2.0` 写回成 `2`，`1e400` 读成无穷、写不进响应）。`Error.Details` 与插件协议的错误细节仍按值模型读成 `int64` / `float64`。迁移：对 `any` 里的数字做类型断言的代码改为断言 `json.Number`，再用 `Int64()` / `Float64()` 取值。
 
 ## 开发
 

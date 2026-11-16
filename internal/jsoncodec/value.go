@@ -1,6 +1,7 @@
 package jsoncodec
 
 import (
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -28,6 +29,33 @@ func FromJSON(value *jsontext.Value) any {
 		members := make(map[string]any, len(value.Members))
 		for _, member := range value.Members {
 			members[member.Name] = FromJSON(member.Value)
+		}
+		return members
+	}
+	return nil
+}
+
+// Preserve 把 JSON 值读成任意 JSON 的 Go 值，原样保留读到的值（RFC-0011 规则 2，ADR-0236）：null 为 nil，布尔为 bool，字符串为 string，
+// 数字是原文的 json.Number（1e400、超出双精度的整数、2.0 与 2 的区别都在），数组为 []any，对象为 map[string]any。
+// json.Number 经 encoding/json 或 Marshal 写回时原样写出；模板与 Describe 按值模型读它
+func Preserve(value *jsontext.Value) any {
+	switch value.Kind {
+	case jsontext.Bool:
+		return value.Bool
+	case jsontext.Number:
+		return json.Number(value.Text)
+	case jsontext.String:
+		return value.Text
+	case jsontext.Array:
+		items := make([]any, len(value.Items))
+		for index, item := range value.Items {
+			items[index] = Preserve(item)
+		}
+		return items
+	case jsontext.Object:
+		members := make(map[string]any, len(value.Members))
+		for _, member := range value.Members {
+			members[member.Name] = Preserve(member.Value)
 		}
 		return members
 	}

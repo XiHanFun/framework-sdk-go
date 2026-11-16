@@ -156,12 +156,12 @@ func TestWireReadingRunsTheCommonJSONCheck(t *testing.T) {
 	}
 }
 
-// TestWireNumbersFollowTheValueModel 核对线上的数字按值模型往返（RFC-0001「Result」，ADR-0236）：64 位范围内的整数精确往返，
-// 整数值的浮点写出时仍是浮点（2.0、-0.0），非有限值写成字符串
+// TestWireNumbersFollowTheValueModel 核对线上的数字按值模型往返（RFC-0001「Result」，ADR-0236）：Result[any] 的值是任意 JSON，数字保留原文，
+// 写回时与读到的相同；细节按值模型读，整数值的浮点写出时仍是浮点（2.0、-0.0），非有限值写成字符串
 func TestWireNumbersFollowTheValueModel(t *testing.T) {
 	cases := map[string]string{
 		`{"ok":true,"value":{"m":-9223372036854775808,"n":9007199254740993}}`: `{"ok":true,"value":{"m":-9223372036854775808,"n":9007199254740993}}`,
-		`{"ok":true,"value":[2.0,-0.0,2,1e17,0.5]}`:                           `{"ok":true,"value":[2.0,-0.0,2,1E+17,0.5]}`,
+		`{"ok":true,"value":[2.0,-0.0,2,1e17,0.5,1e400]}`:                     `{"ok":true,"value":[2.0,-0.0,2,1e17,0.5,1e400]}`,
 	}
 	for data, want := range cases {
 		var result primitives.Result[any]
@@ -174,7 +174,7 @@ func TestWireNumbersFollowTheValueModel(t *testing.T) {
 		}
 	}
 	var typed primitives.Result[map[string]any]
-	if err := json.Unmarshal([]byte(`{"ok":true,"value":{"n":9007199254740993}}`), &typed); err != nil || typed.Must()["n"] != int64(9007199254740993) {
+	if err := json.Unmarshal([]byte(`{"ok":true,"value":{"n":9007199254740993}}`), &typed); err != nil || typed.Must()["n"] != json.Number("9007199254740993") {
 		t.Errorf("typed value %v (%v)", typed, err)
 	}
 	failure := primitives.Literal("KERNEL_UNEXPECTED_001", "x", map[string]any{"f": 2.0, "z": math.Copysign(0, -1), "e": 1e17, "n": 2, "nan": math.NaN(), "big": uint64(math.MaxUint64)}, nil)

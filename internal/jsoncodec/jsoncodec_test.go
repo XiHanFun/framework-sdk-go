@@ -93,7 +93,10 @@ func TestDecodeFollowsThePayloadRules(t *testing.T) {
 	if !math.IsInf(decoded.Ratio, 1) || decoded.Count != 0 {
 		t.Errorf("decoded %+v", decoded)
 	}
-	if meta := decoded.Meta.(map[string]any); meta["n"] != int64(9007199254740993) || meta["f"] != 2.0 {
+	if encoded, err := Marshal(decoded.Meta); err != nil || string(encoded) != `{"f":2.0,"n":9007199254740993}` {
+		t.Errorf("any JSON writes back what it read: %s (%v)", encoded, err)
+	}
+	if meta := decoded.Meta.(map[string]any); meta["n"] != json.Number("9007199254740993") || meta["f"] != json.Number("2.0") {
 		t.Errorf("meta %#v", meta)
 	}
 }
