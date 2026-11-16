@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -134,48 +133,71 @@ func sameNames(left, right []string) bool {
 	return slices.Equal(left, right)
 }
 
-// counts 与 order 是 payload-reasons.json 的两个请求类型：成员值都是整数的对象，与 { lines: [ { quantity: 整数 } ] }
-type counts map[string]int
+// counts、order 与 profile 是 payload-reasons.json 的三个请求类型（requests 的描述）：成员值都是 32 位整数的对象；
+// { lines: [ { quantity: 32 位整数 } ] }，都可选；profile 的 name 与 inner.n 必填（xihan:"required"），其余可选
+type counts map[string]int32
 
 type order struct {
 	Lines []struct {
-		Quantity int `json:"quantity"`
+		Quantity int32 `json:"quantity"`
 	} `json:"lines"`
 }
 
-// TestPayloadReasonsFollowTheVectors 回放 payload-reasons.json：载荷不合法时 reason 是期望的 JSON 路径，语法错误只要求以 $ 开头
+type profile struct {
+	Name   string   `json:"name" xihan:"required"`
+	Note   string   `json:"note"`
+	Count  int64    `json:"count"`
+	Ratio  float64  `json:"ratio"`
+	Flag   bool     `json:"flag"`
+	Tags   []string `json:"tags"`
+	Scores []int64  `json:"scores"`
+	Inner  *struct {
+		N int64 `json:"n" xihan:"required"`
+	} `json:"inner"`
+	Meta any `json:"meta"`
+}
+
+// echo 登记一个只解码请求的操作：向量只核对解码，响应是空对象（1e400 读成的无穷写不进响应）
+func echo[Req any](t *testing.T, registry *operation.Registry, id string) {
+	t.Helper()
+	if err := operation.Add(registry, operation.Contract{ID: id}, operation.HandlerFunc[Req, struct{}](func(*invocation.Context, Req) primitives.Result[struct{}] {
+		return primitives.Ok(struct{}{})
+	}), nil, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPayloadReasonsFollowTheVectors 回放 payload-reasons.json（RFC-0011 规则 2，ADR-0236）：reason 为 null 的载荷解码成功，
+// 其余为 KERNEL_VALIDATION_001 + kernel.operation.invalid_payload，reason 逐字相等（语法错误一律 $）
 func TestPayloadReasonsFollowTheVectors(t *testing.T) {
 	vectors, err := conformance.PayloadReasons()
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, request := range []string{"counts", "order", "profile"} {
+		if vectors.Requests[request] == "" {
+			t.Fatalf("the vector does not describe the request type %s", request)
+		}
+	}
 	registry := operation.NewRegistry()
-	if err := operation.Add(registry, operation.Contract{ID: "counts.post"}, operation.HandlerFunc[counts, counts](func(_ *invocation.Context, request counts) primitives.Result[counts] { return primitives.Ok(request) }), nil, ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := operation.Add(registry, operation.Contract{ID: "order.post"}, operation.HandlerFunc[order, order](func(_ *invocation.Context, request order) primitives.Result[order] { return primitives.Ok(request) }), nil, ""); err != nil {
-		t.Fatal(err)
-	}
+	echo[counts](t, registry, "counts.post")
+	echo[order](t, registry, "order.post")
+	echo[profile](t, registry, "profile.post")
 	invoker, err := operation.NewInvoker(registry, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reason := func(request, payload string) (string, *primitives.Error) {
-		failure := invoker.Invoke(invocation.Background(), operation.Request{ID: request + ".post", Payload: []byte(payload)}).Outcome.Err()
-		if failure == nil || failure.Code != operation.ErrorCodeInvalidPayload || failure.MessageKey != operation.MessageInvalidPayload {
-			return "", failure
-		}
-		text, _ := failure.Details["reason"].(string)
-		return text, failure
-	}
 	for _, c := range vectors.Cases {
-		if got, failure := reason(c.Request, c.Payload); got != c.Reason {
-			t.Errorf("%s: %s reason %q, want %q (%v)", c.Name, c.Payload, got, c.Reason, failure)
+		outcome := invoker.Invoke(invocation.Background(), operation.Request{ID: c.Request + ".post", Payload: []byte(c.Payload)}).Outcome
+		if c.Reason == nil {
+			if !outcome.OK() {
+				t.Errorf("%s: %q must decode, got %v", c.Name, c.Payload, outcome.Err())
+			}
+			continue
 		}
-	}
-	for _, c := range vectors.SyntaxErrors {
-		if got, failure := reason(c.Request, c.Payload); !strings.HasPrefix(got, "$") {
-			t.Errorf("syntax error %s: reason %q must start with $ (%v)", c.Payload, got, failure)
+		failure := outcome.Err()
+		if failure == nil || failure.Code != operation.ErrorCodeInvalidPayload || failure.MessageKey != operation.MessageInvalidPayload || failure.Details["reason"] != *c.Reason || failure.Details["id"] != c.Request+".post" {
+			t.Errorf("%s: %q gives %v, want reason %q", c.Name, c.Payload, failure, *c.Reason)
 		}
 	}
 }

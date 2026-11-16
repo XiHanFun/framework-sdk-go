@@ -1,15 +1,15 @@
 package primitives_test
 
 import (
-	"bytes"
 	"encoding/json"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/xihanfun/framework-spec/conformance"
 	"github.com/xihanfun/framework-spec/conformance/rules"
 
+	"github.com/xihanfun/framework-sdk-go/internal/jsoncodec"
+	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
 	"github.com/xihanfun/framework-sdk-go/primitives"
 )
 
@@ -94,20 +94,31 @@ func canonicalOf(c conformance.WireCase) []byte {
 	return c.JSON
 }
 
-// assertSameJSON 按 JSON 值比较，不比较成员顺序与空白
+// assertSameJSON 按值模型比较 JSON 值（ADR-0236）：不比较成员顺序与空白；64 位范围内整数写法的数字是整数、要精确相等，
+// 其余是双精度浮点、按值相等，整数与浮点不相等
 func assertSameJSON(t *testing.T, name string, got, want []byte) {
 	t.Helper()
-	var left, right any
-	if err := json.Unmarshal(got, &left); err != nil {
-		t.Errorf("%s: written %s is not JSON: %v", name, got, err)
+	left, ok := valueModelOf(got)
+	if !ok {
+		t.Errorf("%s: written %s is not JSON", name, got)
 		return
 	}
-	if err := json.Unmarshal(want, &right); err != nil {
-		t.Fatalf("%s: vector %s is not JSON: %v", name, want, err)
+	right, ok := valueModelOf(want)
+	if !ok {
+		t.Fatalf("%s: vector %s is not JSON", name, want)
 	}
 	if !reflect.DeepEqual(left, right) {
 		t.Errorf("%s: written %s, want %s", name, got, want)
 	}
+}
+
+// valueModelOf 按值模型读 JSON 文本
+func valueModelOf(data []byte) (any, bool) {
+	root, problem := jsontext.Parse(data)
+	if problem != nil {
+		return nil, false
+	}
+	return jsoncodec.FromJSON(root), true
 }
 
 // TestMessageKeysFollowTheTemplateVectors 回放 message-templates.json 的 keys
@@ -136,15 +147,20 @@ func TestTemplatesFollowTheVectors(t *testing.T) {
 	}
 	for _, c := range vectors.Format {
 		arguments := argumentsOf(t, c.Arguments)
-		if got := primitives.FormatMessage(c.Template, arguments); got != c.Lenient {
-			t.Errorf("%s: FormatMessage(%q) = %q, want %q", c.Name, c.Template, got, c.Lenient)
+		if got := primitives.FormatMessageIn(c.Locale, c.Template, arguments); got != c.Lenient {
+			t.Errorf("%s: FormatMessageIn(%q, %q) = %q, want %q", c.Name, c.Locale, c.Template, got, c.Lenient)
 		}
-		strict, ok := primitives.TryFormatMessage(c.Template, arguments)
+		strict, ok := primitives.TryFormatMessageIn(c.Locale, c.Template, arguments)
 		switch {
 		case c.Strict == nil && ok:
-			t.Errorf("%s: TryFormatMessage(%q) must fail, got %q", c.Name, c.Template, strict)
+			t.Errorf("%s: TryFormatMessageIn(%q, %q) must fail, got %q", c.Name, c.Locale, c.Template, strict)
 		case c.Strict != nil && (!ok || strict != *c.Strict):
-			t.Errorf("%s: TryFormatMessage(%q) = %q (%v), want %q", c.Name, c.Template, strict, ok, *c.Strict)
+			t.Errorf("%s: TryFormatMessageIn(%q, %q) = %q (%v), want %q", c.Name, c.Locale, c.Template, strict, ok, *c.Strict)
+		}
+		if c.Locale == "" {
+			if got := primitives.FormatMessage(c.Template, arguments); got != c.Lenient {
+				t.Errorf("%s: FormatMessage(%q) = %q, want %q", c.Name, c.Template, got, c.Lenient)
+			}
 		}
 		if placeholders, want := primitives.Placeholders(c.Template), rules.Placeholders(c.Template); !reflect.DeepEqual(placeholders, want) {
 			t.Errorf("%s: Placeholders(%q) = %v, want %v", c.Name, c.Template, placeholders, want)
@@ -165,28 +181,17 @@ func TestDescribeFollowsTheVectors(t *testing.T) {
 	}
 }
 
-// argumentsOf 按向量的约定把参数交给格式化：null 是没有参数；JSON 数字带小数点或指数的是浮点，否则是整数
+// argumentsOf 按向量的约定把参数交给格式化：null 是没有参数；值按 JSON 的值模型读（ADR-0236）——整数写法且在 64 位范围内是 int64，
+// 其余数字是 float64，数组与对象是 []any 与 map[string]any
 func argumentsOf(t *testing.T, raw json.RawMessage) map[string]any {
 	t.Helper()
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil
 	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	var arguments map[string]any
-	if err := decoder.Decode(&arguments); err != nil {
-		t.Fatalf("arguments %s: %v", raw, err)
-	}
-	for name, value := range arguments {
-		number, ok := value.(json.Number)
-		if !ok {
-			continue
-		}
-		if strings.ContainsAny(number.String(), ".eE") {
-			arguments[name], _ = number.Float64()
-		} else {
-			arguments[name], _ = number.Int64()
-		}
+	value, ok := valueModelOf(raw)
+	arguments, isObject := value.(map[string]any)
+	if !ok || !isObject {
+		t.Fatalf("arguments %s are not a JSON object", raw)
 	}
 	return arguments
 }

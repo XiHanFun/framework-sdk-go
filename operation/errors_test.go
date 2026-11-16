@@ -16,7 +16,7 @@ func TestKernelTemplatesMatchTheReferenceImplementation(t *testing.T) {
 	want := map[string]string{
 		"kernel.operation.unknown":                "Operation '{id}' is not registered.",
 		"kernel.operation.invalid_payload":        "The payload of operation '{id}' is not valid: {reason}",
-		"kernel.operation.type_mismatch":          "Operation '{id}' handles '{expected}', but '{actual}' was supplied.",
+		"kernel.operation.type_mismatch":          "Operation '{id}' was invoked with request or response types that do not match its registration.",
 		"kernel.operation.no_response":            "Operation '{id}' completed without producing a response.",
 		"kernel.operation.duplicate":              "Operation '{id}' is already registered by '{owner}'.",
 		"kernel.operation.registry_full":          "The operation registry has reached its capacity of {capacity}.",
@@ -119,15 +119,15 @@ func TestInvalidPayloadReasonIsOnlyAPath(t *testing.T) {
 	}
 }
 
-// TestTypeMismatchNamesBothSignatures 核对类型化调用不符：KERNEL_VALIDATION_002 + kernel.operation.type_mismatch，参数 {id, expected, actual}
-func TestTypeMismatchNamesBothSignatures(t *testing.T) {
+// TestTypeMismatchCarriesOnlyTheID 核对类型化调用不符：KERNEL_VALIDATION_002 + kernel.operation.type_mismatch，参数只有 {id}（ADR-0236）
+func TestTypeMismatchCarriesOnlyTheID(t *testing.T) {
 	invoker := newInvoker(t, nil)
 	assertError(t, operation.Invoke[createOrder, string](invoker, invocation.Background(), "orders.create", createOrder{Quantity: 1}).Err(),
-		"KERNEL_VALIDATION_002", "kernel.operation.type_mismatch", map[string]any{"id": "orders.create", "expected": "createOrder -> orderCreated", "actual": "createOrder -> string"},
-		"Operation 'orders.create' handles 'createOrder -> orderCreated', but 'createOrder -> string' was supplied.")
+		"KERNEL_VALIDATION_002", "kernel.operation.type_mismatch", map[string]any{"id": "orders.create"},
+		"Operation 'orders.create' was invoked with request or response types that do not match its registration.")
 	assertError(t, operation.Invoke[map[string]any, *orderCreated](invoker, invocation.Background(), "orders.create", nil).Err(),
-		"KERNEL_VALIDATION_002", "kernel.operation.type_mismatch", map[string]any{"id": "orders.create", "expected": "createOrder -> orderCreated", "actual": "map[string]interface {} -> *operation_test.orderCreated"},
-		"Operation 'orders.create' handles 'createOrder -> orderCreated', but 'map[string]interface {} -> *operation_test.orderCreated' was supplied.")
+		"KERNEL_VALIDATION_002", "kernel.operation.type_mismatch", map[string]any{"id": "orders.create"},
+		"Operation 'orders.create' was invoked with request or response types that do not match its registration.")
 }
 
 // TestShortCircuitWithSuccessHasNoResponse 核对中间件以成功短路、处理器没有产出响应：KERNEL_UNEXPECTED_001 + kernel.operation.no_response，参数 {id}；

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"reflect"
 	"regexp"
 	"runtime/debug"
 	"sort"
@@ -44,7 +43,7 @@ const (
 	MessageNotFound = "kernel.operation.unknown"
 	// MessageInvalidPayload：载荷不合法，参数 {id, reason}；reason 只写出错位置的 JSON 路径（RFC-0011 规则 2）
 	MessageInvalidPayload = "kernel.operation.invalid_payload"
-	// MessageTypeMismatch：类型化调用的类型与登记不符，参数 {id, expected, actual}，值是「请求类型 -> 响应类型」
+	// MessageTypeMismatch：类型化调用的请求或响应类型与登记不符，参数只有 {id}（ADR-0236：类型名是实现语言的，各语言写不出同样的参数）
 	MessageTypeMismatch = "kernel.operation.type_mismatch"
 	// MessageNoResponse：中间件以成功短路、处理器没有产出响应，参数 {id}
 	MessageNoResponse = "kernel.operation.no_response"
@@ -59,7 +58,7 @@ func init() {
 	primitives.RegisterDefaultTemplates(map[string]string{
 		MessageNotFound:       "Operation '{id}' is not registered.",
 		MessageInvalidPayload: "The payload of operation '{id}' is not valid: {reason}",
-		MessageTypeMismatch:   "Operation '{id}' handles '{expected}', but '{actual}' was supplied.",
+		MessageTypeMismatch:   "Operation '{id}' was invoked with request or response types that do not match its registration.",
 		MessageNoResponse:     "Operation '{id}' completed without producing a response.",
 		MessageDuplicate:      "Operation '{id}' is already registered by '{owner}'.",
 		MessageRegistryFull:   "The operation registry has reached its capacity of {capacity}.",
@@ -140,7 +139,6 @@ type Descriptor struct {
 	// Owner 是归属（清单 ID 或 app）。
 	Owner   string
 	handler any
-	types   string
 	// decode 把载荷解码成请求（Validate 阶段的内置步骤用）；handle 执行处理器并编码响应
 	decode func(payload []byte) (any, *primitives.Error)
 	handle func(ctx *invocation.Context, request any) Response
@@ -177,7 +175,7 @@ func Add[Req, Res any](registry *Registry, contract Contract, handler Handler[Re
 	if owner == "" {
 		owner = pipeline.AppOwner
 	}
-	descriptor := &Descriptor{Contract: contract, Schema: schema, Owner: owner, handler: handler, types: signature[Req, Res]()}
+	descriptor := &Descriptor{Contract: contract, Schema: schema, Owner: owner, handler: handler}
 	descriptor.decode = func(payload []byte) (any, *primitives.Error) {
 		request, err := decode[Req](contract.ID, payload)
 		if err != nil {
@@ -208,19 +206,6 @@ func Add[Req, Res any](registry *Registry, contract Contract, handler Handler[Re
 	}
 	registry.descriptors[contract.ID] = descriptor
 	return nil
-}
-
-// signature 返回「请求类型 -> 响应类型」，类型化调用不符时写进 expected / actual（与 .NET 一样用类型的短名）
-func signature[Req, Res any]() string {
-	return typeName(reflect.TypeFor[Req]()) + " -> " + typeName(reflect.TypeFor[Res]())
-}
-
-// typeName 返回类型的短名；没有名字的类型（切片、映射、匿名结构体、指针）用它的文本形式
-func typeName(t reflect.Type) string {
-	if t.Name() != "" {
-		return t.Name()
-	}
-	return t.String()
 }
 
 // Get 按 ID 取描述。
@@ -416,7 +401,7 @@ func Invoke[Req, Res any](invoker *Invoker, ctx *invocation.Context, id string, 
 	}
 	handler, ok := descriptor.handler.(Handler[Req, Res])
 	if !ok {
-		return primitives.Fail[Res](primitives.Validation(ErrorCodeTypeMismatch, MessageTypeMismatch, map[string]any{"id": id, "expected": descriptor.types, "actual": signature[Req, Res]()}))
+		return primitives.Fail[Res](primitives.Validation(ErrorCodeTypeMismatch, MessageTypeMismatch, map[string]any{"id": id}))
 	}
 	var result primitives.Result[Res]
 	produced := false
