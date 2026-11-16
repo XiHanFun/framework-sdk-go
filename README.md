@@ -52,7 +52,7 @@ func main() {
 }
 ```
 
-1. 清单 `xihan.manifest.json`：`kind: plugin`、`isolation: out-of-process`、`contributes.operations` 列出全部操作、`entry` 是可执行文件名；不写 `contributes.pipeline`（只有 Wasm 插件能贡献中间件，`manifest.Read` 读到非空即拒绝，与宿主一致）；构建产物目录里放同一份文件，宿主读它、运行时握手时原样发送。
+1. 清单 `xihan.manifest.json`：`kind: plugin`、`isolation: out-of-process`、`contributes.operations` 列出全部操作、`entry` 是可执行文件名；不写 `contributes.pipeline`（只有 Wasm 插件能贡献中间件，`plugin.Serve` 读到非空即拒绝，与宿主发现插件时一致；`manifest.Read` 照 .NET 的 `ManifestReader` 不查这一条）；构建产物目录里放同一份文件，宿主读它、运行时握手时原样发送。
 2. 操作用 `operation.Add` 登记，请求与响应是普通的 JSON 结构；可恢复失败返回 `primitives.Fail`，错误码按 `<领域大写>_<KIND>_<NNN>`，文案用消息键 + `plugin.LoadCatalog` 加载的 `Localization/<区域>.json`。
 3. 订阅、生命周期回调、健康项经 `plugin.Options` 接入；`Configure` 回调里用 `configuration.Decode(&settings)` 读配置节（宿主以字符串下发数字与布尔，按字段类型转换）；操作里用 `plugin.HostOf(ctx)` 回调宿主（`Invoke` 经宿主完整管道，`Publish` 经宿主消息代理），权限由清单 `permissions` 声明、宿主授予。订阅的 `Mode` 选订阅方式（RFC-0009「订阅方式」）：空或 `plugin.SubscriptionModeCompeting` 是竞争消费，订阅了主题的宿主实例里只有一个把消息交给插件；`plugin.SubscriptionModeBroadcast` 是广播，每个在线的宿主实例都交给自己的插件实例，尽力而为、不进死信，适合清本地缓存这类每个实例都要做的事。同一（主题，类型）对只能声明一次，不能以两种方式各声明一次，`Serve` 启动时即拒绝；同一主题的不同类型可以各用一种方式，宿主投递时带上这次的方式，运行时只交给以这种方式声明的处理器。
 4. 日志写 stderr：`slog.New(plugin.NewLogHandler(os.Stderr, slog.LevelInfo))`，宿主按结构化日志接收；stdout 只有握手行。
@@ -102,6 +102,17 @@ type CreateOrder struct {
 }
 ```
 
+### 清单
+
+`manifest.Read` 的检查顺序与错误照 RFC-0002 解析规则 2（ADR-0236，与 .NET 的 `ManifestReader` 逐字一致），每一步只报第一处问题，失败都是 `*primitives.Error`，错误码 `KERNEL_CAPABILITY_006`（`manifest.ErrorCodeInvalidManifest`）：
+
+1. 共同的 JSON 读取检查：不是 JSON 为 `kernel.manifest.invalid_json`，`reason` 是 `$`；有重复成员时同一个键，`reason` 是第一处重复的路径。`Read` 不跳过 BOM；`ReadFile` 按 UTF-8 读、跳过开头的 UTF-8 BOM，文件不存在为 `kernel.manifest.file_missing`（参数 `path`）。
+2. 根是 `null`：`kernel.manifest.empty`，没有参数。
+3. 按 Schema 逐项核对：`kernel.manifest.invalid`，`reason` 是第一处问题的路径，如 `$.provides[0].version`。成员按文本顺序，各自依次查 Schema 之外的成员（区分大小写）、`null`、类型、取值，对象与数组进到里面再查；一个对象查完后按 `required` 的顺序查缺少的成员。接口版本是不带前导零的正整数，不超过 2147483647，只有 `requires[].version` 可以带一个 `^`；中间件名非空，阶段与枚举只认小写名，`contributes.health` 符合 `^[a-z][a-z0-9.-]*$`，`contributes.permissions` 重复时报第二次出现的项，`activation` 至少一项。
+4. 跨字段约束：插件没有 `isolation`、非插件写了 `isolation` 或 `permissions`、`provides` 重复、`requires` 重复、`bindings` 的名字重复，按这个顺序，键是 `primitives.manifest.*`，参数只有 `id`。
+
+`Manifest.Validate` 先按 Schema 核对清单写出的形态，再核对跨字段约束，码是 `PRIMITIVES_VALIDATION_001`（与 .NET 的 `Manifest.Validate` 一致）。`manifest.Write` 的排版写死（RFC-0002「写出」）：两个空格缩进、LF、末尾不换行、`": "`、空数组写 `[]`、成员顺序固定、列表总写、`role` 缺省写 `provider`、`activation` 缺省写 `["onStartup"]`、`$schema` 固定，字符串只转义必须转义的字符；与 .NET 一样不做校验。
+
 ## 破坏性改动与迁移
 
 本节列出与规范、.NET 参考实现对齐时改掉的旧行为，以及调用方怎么改。
@@ -130,6 +141,7 @@ type CreateOrder struct {
 - JSON 文本的共同读取检查（RFC-0001「JSON 文本」，ADR-0236）：`Result` 与 `Error` 读取时开头的 BOM、嵌套超过 64 层、孤立的代理项转义（`"\ud800"`）与非法 UTF-8 都拒绝，旧版由 `encoding/json` 接受（孤立的代理项换成 U+FFFD）。操作载荷先过同一遍检查：语法错误（含 BOM、嵌套超过 64 层、孤立的代理项）的 `reason` 一律 `$`；任何一层的重复成员是 `KERNEL_VALIDATION_001`，`reason` 是第一处重复的路径，先于其他问题（旧版 `encoding/json` 取最后一个）；只有空白的载荷不再等价于 `{}`（空载荷仍等价于 `{}`），按语法错误处理。`manifest.Read` 同样拒绝这些写法。迁移：发送合法的 UTF-8 JSON，不在文本前加 BOM，生成 JSON 的代码去掉重复成员。
 - 线上的数字按值模型往返（ADR-0236）：`Result[any]`、`Result[map[string]any]` 的值与 `Error.Details` 里的整数读成 `int64`，旧版由 `encoding/json` 读成 `float64`（超过 2^53 的整数因此失真）；整数值的浮点写成 `2.0`、`-0.0`（旧版写 `2`、`-0`，对方读成整数）；`NaN` 与无穷写成字符串（旧版 `json.Marshal` 报错，整个 `Result` 写不出）。插件协议的 `Error.details` 照同一模型读写，读回的数组与对象是 `[]any` 与 `map[string]any`，不是合法 JSON 对象的细节丢弃。`Result`、`Maybe`、`ID` 的类型化值改用 SDK 的解码：成员名区分大小写（旧版 `"Count"` 也能读进 `count`）、整数不接受 `1.0`、整数与布尔不接受 `null`、数字不从字符串读。迁移：按 `float64` 断言细节里整数的代码改为同时接受 `int64`（或用 `primitives.FormatValue` 取文本）；发送端照字段的 JSON 名字写成员。
 - 操作载荷按 RFC-0011 规则 2 解码（ADR-0236），不再交给 `encoding/json`：成员名区分大小写（旧版 `"Quantity"` 也能读进 `quantity`）；`int32` 等窄整数按自己的范围核对；浮点字段的 `1e400` 读成无穷（旧版报类型不符）；`null` 落在整数、浮点、布尔的切片项与映射值上也报类型不符；新增必填标签 `xihan:"required"`；几处问题同时存在时按文本顺序报第一处，缺少的必填成员在所在对象结束时报。迁移：调用方照字段的 JSON 名字写成员；需要接受 `null` 的数值改用指针；契约要求必填的成员加上 `xihan:"required"`。
+- 清单的读取与写出与 .NET 逐字一致（RFC-0002，ADR-0236）：`manifest.Read`、`ReadFile` 的错误由 `*primitives.FrameworkError`（`PRIMITIVES_VALIDATION_001`，英文说明）改为 `*primitives.Error`，码 `KERNEL_CAPABILITY_006`，键是 `kernel.manifest.invalid_json` / `empty` / `invalid` / `file_missing` 或 `primitives.manifest.*`，参数只有路径（`reason`）、`path` 或 `id`；`Validate` 也返回 `*primitives.Error`。接口版本超过 2147483647 拒绝（旧版到 int 的上限，`ParseRequirement`、`ParseDeclaration` 同样）；中间件名为空、`contributes.health` 不合文法开始拒绝。`ReadFile` 跳过开头的 UTF-8 BOM，`Read` 不跳过。`Write` 改为规范的排版：列表总写（`[]`）、`role` 与 `activation` 写出缺省值、`requires[].optional` 与 `bindings[].required` 总写、字符串不再转义 `<`、`>`、`&` 与非 ASCII，`Write` 不再校验（与 .NET 一样），`Activation` 为空切片时写 `["onStartup"]`。只有 Wasm 插件能贡献中间件的规则从 `manifest.Read` 移到 `plugin.Serve`（.NET 宿主在发现插件时核对，`ManifestReader` 不核对）。迁移：按错误码匹配的地方改为 `errors.As(err, &primitivesError)` 并看 `Code` 与 `MessageKey`；按英文说明匹配的地方改为看路径；比较写出文本的测试更新期望值。
 
 ## 开发
 

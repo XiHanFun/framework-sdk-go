@@ -48,6 +48,11 @@ func Serve(ctx context.Context, opts Options) error {
 	if m.Kind != manifest.KindPlugin || m.Isolation != manifest.IsolationOutOfProcess {
 		return configurationError("the manifest '%s' must describe a plugin with isolation out-of-process", m.ID)
 	}
+	// 只有 Wasm 插件能贡献中间件（RFC-0017「范围」，RFC-0002）：.NET 宿主在发现时以 PLUGINS_VALIDATION_001 拒绝写了 contributes.pipeline 的
+	// 进程外插件，manifest.Read 照 .NET 的 ManifestReader 不查这一条，这里在监听前拒绝，不让作者以为中间件生效了
+	if m.Contributes != nil && len(m.Contributes.Pipeline) > 0 {
+		return configurationError("the plugin '%s' must not declare 'contributes.pipeline': only wasm plugins can contribute middleware", m.ID)
+	}
 	for _, descriptor := range opts.Operations.List() {
 		if !slices.Contains(m.Operations(), descriptor.Contract.ID) {
 			return configurationError("the operation '%s' is not declared in contributes.operations of '%s'", descriptor.Contract.ID, m.ID)

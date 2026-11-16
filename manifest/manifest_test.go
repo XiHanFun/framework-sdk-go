@@ -157,46 +157,25 @@ func TestRequirementsFollowTheVectors(t *testing.T) {
 	}
 }
 
-// TestOnlyWasmPluginsMayContributeMiddleware 核对与 .NET 宿主同一规则（RFC-0017「范围」）：只有 Wasm 插件能贡献中间件，
-// 进程外与进程内插件的清单写了非空 contributes.pipeline 在读清单时即被拒绝；能力包等非插件照常可以写。
-func TestOnlyWasmPluginsMayContributeMiddleware(t *testing.T) {
+// TestReadLeavesTheWasmOnlyRuleToTheHost 核对读取照 .NET 的 ManifestReader：只有 Wasm 插件能贡献中间件是宿主发现插件时的规则
+// （RFC-0017「范围」，.NET 以 PLUGINS_VALIDATION_001 拒绝），Read 与 Validate 不查，plugin.Serve 在监听前拒绝
+func TestReadLeavesTheWasmOnlyRuleToTheHost(t *testing.T) {
 	const template = `{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":%q%s,"contributes":{"pipeline":%s}}`
 	const audit = `[{"middleware":"audit","stage":"observe"},{"middleware":"tenant-guard","stage":"tenant"}]`
-	for _, isolation := range []manifest.Isolation{manifest.IsolationOutOfProcess, manifest.IsolationInProcess} {
-		data := fmt.Sprintf(template, manifest.KindPlugin, fmt.Sprintf(`,"isolation":%q`, isolation), audit)
-		_, err := manifest.Read([]byte(data))
-		var framework *primitives.FrameworkError
-		if !errors.As(err, &framework) || framework.Code != primitives.ErrorCodeInvalidArgument {
-			t.Errorf("a %s plugin contributing middleware must be rejected with %s, got %v", isolation, primitives.ErrorCodeInvalidArgument, err)
+	for name, data := range map[string]string{
+		"out-of-process plugin": fmt.Sprintf(template, manifest.KindPlugin, `,"isolation":"out-of-process"`, audit),
+		"in-process plugin":     fmt.Sprintf(template, manifest.KindPlugin, `,"isolation":"in-process"`, audit),
+		"wasm plugin":           fmt.Sprintf(template, manifest.KindPlugin, `,"isolation":"wasm"`, audit),
+		"capability":            fmt.Sprintf(template, manifest.KindCapability, "", audit),
+	} {
+		m, err := manifest.Read([]byte(data))
+		if err != nil {
+			t.Errorf("%s must be read: %v", name, err)
 			continue
 		}
-		for _, fragment := range []string{"'xihan.a.b'", "'contributes.pipeline'", "audit, tenant-guard", string(isolation)} {
-			if !strings.Contains(framework.Message, fragment) {
-				t.Errorf("the message for a %s plugin must mention %s: %s", isolation, fragment, framework.Message)
-			}
+		if len(m.Contributes.Pipeline) != 2 || m.Contributes.Pipeline[1].Stage != primitives.Tenant {
+			t.Errorf("%s: pipeline %+v", name, m.Contributes.Pipeline)
 		}
-	}
-
-	accepted := map[string]string{
-		"wasm plugin":                fmt.Sprintf(template, manifest.KindPlugin, `,"isolation":"wasm"`, audit),
-		"capability":                 fmt.Sprintf(template, manifest.KindCapability, "", audit),
-		"provider":                   fmt.Sprintf(template, manifest.KindProvider, "", audit),
-		"out-of-process, empty list": fmt.Sprintf(template, manifest.KindPlugin, `,"isolation":"out-of-process"`, `[]`),
-		"in-process, empty list":     fmt.Sprintf(template, manifest.KindPlugin, `,"isolation":"in-process"`, `[]`),
-	}
-	for name, data := range accepted {
-		if _, err := manifest.Read([]byte(data)); err != nil {
-			t.Errorf("%s must be accepted: %v", name, err)
-		}
-	}
-
-	// 写出同样核对：不生成宿主会拒绝的清单
-	written := &manifest.Manifest{
-		ID: "xihan.a.b", Version: "1.0.0", Primitives: 1, Stability: primitives.Stable, Kind: manifest.KindPlugin, Isolation: manifest.IsolationOutOfProcess,
-		Contributes: &manifest.Contributions{Pipeline: []manifest.PipelineContribution{{Middleware: "audit", Stage: primitives.Observe}}},
-	}
-	if _, err := manifest.Write(written); err == nil {
-		t.Error("writing an out-of-process plugin manifest that contributes middleware must fail")
 	}
 }
 
@@ -254,9 +233,9 @@ func TestReadFollowsTheSchemaStrictly(t *testing.T) {
 	}
 	for name, data := range rejected {
 		_, err := manifest.Read([]byte(data))
-		var framework *primitives.FrameworkError
-		if !errors.As(err, &framework) || framework.Code != primitives.ErrorCodeInvalidArgument {
-			t.Errorf("%s must be rejected with %s, got %v", name, primitives.ErrorCodeInvalidArgument, err)
+		var failure *primitives.Error
+		if !errors.As(err, &failure) || failure.Code != manifest.ErrorCodeInvalidManifest {
+			t.Errorf("%s must be rejected with %s, got %v", name, manifest.ErrorCodeInvalidManifest, err)
 		}
 	}
 }

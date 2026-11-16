@@ -1,7 +1,7 @@
 package manifest_test
 
 import (
-	"reflect"
+	"bytes"
 	"testing"
 
 	"github.com/xihanfun/framework-spec/conformance"
@@ -9,7 +9,7 @@ import (
 	"github.com/xihanfun/framework-sdk-go/manifest"
 )
 
-// TestManifestsFollowTheVectors 回放 manifests.json：合法的清单读得出，写出后再读一遍得到同一份清单；不合法的清单被拒绝
+// TestManifestsFollowTheVectors 回放 manifests.json：合法的清单读得出，写出后再读再写得到同一份文本；不合法的清单被拒绝
 // （RFC-0002 解析规则 2，ADR-0233、ADR-0235）
 func TestManifestsFollowTheVectors(t *testing.T) {
 	vectors, err := conformance.Manifests()
@@ -27,9 +27,14 @@ func TestManifestsFollowTheVectors(t *testing.T) {
 			t.Errorf("%s must be written: %v", c.Name, err)
 			continue
 		}
+		// 写出的文本含缺省值（role、activation、空列表），再读再写得到同一份文本
 		again, err := manifest.Read(written)
-		if err != nil || !reflect.DeepEqual(read, again) {
-			t.Errorf("%s: reading the written manifest gives %+v (%v), want %+v", c.Name, again, err, read)
+		if err != nil {
+			t.Errorf("%s: the written manifest must be read again: %v", c.Name, err)
+			continue
+		}
+		if rewritten, _ := manifest.Write(again); !bytes.Equal(rewritten, written) {
+			t.Errorf("%s: writing the manifest read again gives %q, want %q", c.Name, rewritten, written)
 		}
 	}
 	for _, c := range vectors.Invalid {
