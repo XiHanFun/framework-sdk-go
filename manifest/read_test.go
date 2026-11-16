@@ -89,7 +89,7 @@ func TestReadFileSkipsTheBOMAndReportsMissingFiles(t *testing.T) {
 func TestWriteFollowsTheFixedLayout(t *testing.T) {
 	optional := false
 	m := &manifest.Manifest{
-		ID: "xihan.orders.core", Package: "Échø <&>", Version: "1.0.0", Primitives: 2, Stability: primitives.Preview, Kind: manifest.KindCapability,
+		ID: "xihan.orders.core", Package: manifest.Text("Échø <&>"), Version: "1.0.0", Primitives: 2, Stability: primitives.Preview, Kind: manifest.KindCapability,
 		Requires:    []manifest.CapabilityRequirement{{ID: "kernel.hosting", Version: 1}},
 		Bindings:    []manifest.Binding{{Name: "db", Type: "connection:relational", Required: &optional}},
 		Contributes: &manifest.Contributions{Pipeline: []manifest.PipelineContribution{{Middleware: "audit", Stage: primitives.Observe, After: []string{"x"}}}},
@@ -112,7 +112,7 @@ func TestWriteFollowsTheFixedLayout(t *testing.T) {
 		t.Errorf("written:\n%s\nwant:\n%s", data, want)
 	}
 	again, err := manifest.Read(data)
-	if err != nil || again.Package != m.Package || again.Bindings[0].IsRequired() || again.Contributes.Pipeline[0].After[0] != "x" {
+	if err != nil || *again.Package != *m.Package || again.Bindings[0].IsRequired() || again.Contributes.Pipeline[0].After[0] != "x" {
 		t.Errorf("read again %+v (%v)", again, err)
 	}
 }
@@ -155,6 +155,38 @@ func TestValidateChecksTheWrittenForm(t *testing.T) {
 			if value != c.detail {
 				t.Errorf("%s: details %v, want %s", c.key, failure.Details, c.detail)
 			}
+		}
+	}
+}
+
+// TestOptionalStringsKeepTheEmptyString 核对可选的字符串分得清「写了空串」与「没写」（RFC-0002「写出」，ADR-0236）：
+// 写了空串时读出指向空串的指针、写出时照写，没写时为 nil、写出时不写
+func TestOptionalStringsKeepTheEmptyString(t *testing.T) {
+	const base = `"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"capability"`
+	empty, err := manifest.Read([]byte(`{` + base + `,"package":"","entry":"","contributes":{"config":{"section":"XiHan:Orders","schema":""}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.Package == nil || *empty.Package != "" || empty.Entry == nil || *empty.Entry != "" || empty.Contributes.Config.Schema == nil || *empty.Contributes.Config.Schema != "" {
+		t.Fatalf("empty strings %+v", empty)
+	}
+	written, _ := manifest.Write(empty)
+	for _, member := range []string{`"package": ""`, `"entry": ""`, `"schema": ""`} {
+		if !strings.Contains(string(written), member) {
+			t.Errorf("%s must be written:\n%s", member, written)
+		}
+	}
+	absent, err := manifest.Read([]byte(`{` + base + `,"contributes":{"config":{"section":"XiHan:Orders"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absent.Package != nil || absent.Entry != nil || absent.Contributes.Config.Schema != nil {
+		t.Fatalf("absent strings %+v", absent)
+	}
+	written, _ = manifest.Write(absent)
+	for _, member := range []string{`"package"`, `"entry"`, `"schema"`} {
+		if strings.Contains(string(written), member) {
+			t.Errorf("%s must not be written:\n%s", member, written)
 		}
 	}
 }

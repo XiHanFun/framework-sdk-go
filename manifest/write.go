@@ -12,8 +12,8 @@ func write(manifest *Manifest) []byte {
 	w.startObject()
 	w.member("$schema").text(SchemaURI)
 	w.member("id").text(manifest.ID)
-	if manifest.Package != "" {
-		w.member("package").text(manifest.Package)
+	if manifest.Package != nil {
+		w.member("package").text(*manifest.Package)
 	}
 	w.member("version").text(manifest.Version)
 	w.member("primitives").text(strconv.Itoa(int(manifest.Primitives)))
@@ -68,8 +68,8 @@ func write(manifest *Manifest) []byte {
 	if config := contributes.Config; config != nil {
 		w.member("config").startObject()
 		w.member("section").text(config.Section)
-		if config.Schema != "" {
-			w.member("schema").text(config.Schema)
+		if config.Schema != nil {
+			w.member("schema").text(*config.Schema)
 		}
 		w.end('}')
 	}
@@ -78,8 +78,8 @@ func write(manifest *Manifest) []byte {
 	w.end('}')
 	w.member("activation").texts(manifest.EffectiveActivation())
 	w.member("permissions").texts(manifest.Permissions)
-	if manifest.Entry != "" {
-		w.member("entry").text(manifest.Entry)
+	if manifest.Entry != nil {
+		w.member("entry").text(*manifest.Entry)
 	}
 	w.end('}')
 	return w.buffer

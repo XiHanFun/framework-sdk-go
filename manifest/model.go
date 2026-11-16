@@ -174,9 +174,10 @@ type PipelineContribution struct {
 }
 
 // ConfigContribution 是贡献的配置节：领域节 XiHan:<领域>，可再带一层或多层 PascalCase 子节（如 XiHan:Caching:Redis，RFC-0002「配置节」）。
+// Schema 是可选的配置 Schema 文本：nil 表示没写，指向空串表示写了空串（写出时照写，与 .NET 一致）
 type ConfigContribution struct {
-	Section string `json:"section"`
-	Schema  string `json:"schema,omitempty"`
+	Section string  `json:"section"`
+	Schema  *string `json:"schema,omitempty"`
 }
 
 // Contributions 是贡献点。Permissions 是此包定义的权限码（RFC-0008 权限码文法：小写、点分、至少两段，如 orders.read），
@@ -189,11 +190,12 @@ type Contributions struct {
 	Health      []string               `json:"health,omitempty"`
 }
 
-// Manifest 是一份清单；字段顺序与 Schema 一致。
+// Manifest 是一份清单；字段顺序与 Schema 一致。可选的字符串 Package 与 Entry 用指针：nil 表示没写，指向空串表示写了空串，
+// Write 照样写出 "package": ""（RFC-0002「写出」，与 .NET 一致；用 Text 取指针）
 type Manifest struct {
 	Schema      string                  `json:"$schema,omitempty"`
 	ID          string                  `json:"id"`
-	Package     string                  `json:"package,omitempty"`
+	Package     *string                 `json:"package,omitempty"`
 	Version     string                  `json:"version"`
 	Primitives  InterfaceVersion        `json:"primitives"`
 	Stability   primitives.Stability    `json:"stability"`
@@ -206,7 +208,7 @@ type Manifest struct {
 	Contributes *Contributions          `json:"contributes,omitempty"`
 	Activation  []string                `json:"activation,omitempty"`
 	Permissions []string                `json:"permissions,omitempty"`
-	Entry       string                  `json:"entry,omitempty"`
+	Entry       *string                 `json:"entry,omitempty"`
 }
 
 // Read 读取清单 JSON（RFC-0002 解析规则 2，ADR-0236），按下面的顺序逐项执行、每一步只报第一处问题；失败都是 *primitives.Error，
@@ -322,7 +324,7 @@ func convert(root *jsontext.Value) *Manifest {
 		case "id":
 			manifest.ID = value.Text
 		case "package":
-			manifest.Package = value.Text
+			manifest.Package = Text(value.Text)
 		case "version":
 			manifest.Version = value.Text
 		case "primitives":
@@ -372,7 +374,7 @@ func convert(root *jsontext.Value) *Manifest {
 		case "permissions":
 			manifest.Permissions = texts(value)
 		case "entry":
-			manifest.Entry = value.Text
+			manifest.Entry = Text(value.Text)
 		}
 	}
 	return manifest
@@ -409,7 +411,7 @@ func convertContributions(value *jsontext.Value) *Contributions {
 				config.Section = section.Text
 			}
 			if schema, ok := member.Value.Find("schema"); ok {
-				config.Schema = schema.Text
+				config.Schema = Text(schema.Text)
 			}
 			contributions.Config = config
 		case "permissions":
@@ -430,6 +432,9 @@ func texts(value *jsontext.Value) []string {
 	return items
 }
 
+// Text 返回指向 text 的指针，给清单里可选的字符串（Package、Entry、ConfigContribution.Schema）赋值用
+func Text(text string) *string { return &text }
+
 // versionOf 读已核对的接口版本文本
 func versionOf(text string) InterfaceVersion {
 	value, _ := strconv.Atoi(text)
@@ -438,7 +443,7 @@ func versionOf(text string) InterfaceVersion {
 
 // Write 按 RFC-0002「写出」的排版写出清单（ADR-0236，各语言逐字相同）：两个空格缩进、换行只用 LF、末尾不换行、成员名与值之间是 ": "，
 // 空数组写 []，非空数组每项一行；成员顺序固定，可选成员（package、isolation、config、schema、entry）没有值时不写，其余总写，
-// role 缺省写 provider，activation 缺省写 ["onStartup"]，$schema 固定；接口版本写不带 ^ 的十进制，字符串只转义必须转义的字符。
+// role 缺省写 provider，activation 缺省写 ["onStartup"]，$schema 固定；可选字符串写了空串时照写；接口版本写不带 ^ 的十进制，字符串只转义必须转义的字符。
 // 与 .NET 的 ManifestReader.Write 一样不做校验；manifest 为 nil 时返回 FrameworkError
 func Write(manifest *Manifest) ([]byte, error) {
 	if manifest == nil {
