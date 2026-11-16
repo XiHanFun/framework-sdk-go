@@ -99,7 +99,11 @@ func TestTraceFlagsFollowRFC0003(t *testing.T) {
 	for flags, sampled := range map[string]bool{"00": false, "01": true, "02": false, "03": true, "ff": true, "fe": false} {
 		ctx := invocation.Background(invocation.WithTraceParent(prefix + flags))
 		got, ok := ctx.TraceFlags()
-		if !ok || ctx.TraceParent() != prefix+flags || invocation.IsSampled(got) != sampled {
+		written := prefix + "00"
+		if sampled {
+			written = prefix + "01"
+		}
+		if !ok || ctx.TraceParent() != written || invocation.IsSampled(got) != sampled || got > invocation.SampledFlag {
 			t.Errorf("flags %s: %02x %v, traceparent %s", flags, got, ok, ctx.TraceParent())
 		}
 		if _, _, parsed, ok := invocation.ParseTraceParent(prefix + flags); !ok || parsed != sampled {
@@ -123,4 +127,23 @@ func TestMalformedBaggageKeysPanic(t *testing.T) {
 		}
 	}()
 	invocation.Background().WithBaggage("tenant", "t1")
+}
+
+// TestTraceParentGrammarIsVersion00Only 核对 RFC-0003 规则 7 的文法：只认版本 00 与小写十六进制，不合法的当作没给（ADR-0235）
+func TestTraceParentGrammarIsVersion00Only(t *testing.T) {
+	for _, bad := range []string{
+		"01-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+		"ff-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+		"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-0A",
+		"00-0af7651916cd43dd8448eb211c80319c-0000000000000000-01",
+		"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01-extra",
+		" 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+	} {
+		if _, _, _, ok := invocation.ParseTraceParent(bad); ok {
+			t.Errorf("%q must not parse", bad)
+		}
+		if ctx := invocation.Background(invocation.WithTraceParent(bad)); ctx.TraceID() == "0af7651916cd43dd8448eb211c80319c" {
+			t.Errorf("%q must be ignored", bad)
+		}
+	}
 }

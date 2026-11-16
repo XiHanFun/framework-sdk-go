@@ -46,8 +46,8 @@ func init() {
 	})
 }
 
-// traceParentPattern 是 W3C traceparent：version-traceid-spanid-flags。
-var traceParentPattern = regexp.MustCompile(`^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$`)
+// traceParentPattern 是 W3C traceparent 版本 00 的文法（RFC-0003 规则 7）：只认版本 00 与小写十六进制，别的版本（含 ff）、大写与多余的段都不合法
+var traceParentPattern = regexp.MustCompile(`^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$`)
 
 // Context 是一次调用的上下文；嵌入的 context.Context 承载取消与截止时间，所以可以直接传给需要 context 的 API。
 // 派生上下文共享对象袋，不共享 Baggage（按值复制）。
@@ -57,7 +57,7 @@ type Context struct {
 	expiry   *deadlineToken
 	traceID  string
 	spanID   string
-	// traceFlags 是上游给的 W3C trace-flags；hasTraceFlags 为假时没有上游，这次调用是链路的根（RFC-0003 规则 7）
+	// traceFlags 是上游给的采样位（0x00 或 0x01，其余位不进上下文）；hasTraceFlags 为假时没有上游，这次调用是链路的根（RFC-0003 规则 7）
 	traceFlags    byte
 	hasTraceFlags bool
 	baggage       map[string]string
@@ -99,11 +99,11 @@ func WithTrace(traceID, spanID string) Option {
 	}
 }
 
-// WithTraceParent 从 W3C traceparent 设置追踪 ID、Span ID 与标志；上游「不采样」（00）原样保留，不合法时忽略
+// WithTraceParent 从 W3C traceparent 设置追踪 ID、Span ID 与采样位：只取标志的最低位，上游「不采样」（00）原样保留；不合法时当作没给
 func WithTraceParent(traceParent string) Option {
 	return func(c *Context) {
 		if traceID, spanID, flags, ok := parseTraceParent(traceParent); ok {
-			c.traceID, c.spanID, c.traceFlags, c.hasTraceFlags = traceID, spanID, flags, true
+			c.traceID, c.spanID, c.traceFlags, c.hasTraceFlags = traceID, spanID, flags&SampledFlag, true
 		}
 	}
 }
@@ -190,10 +190,10 @@ func (c *Context) TraceID() string { return c.traceID }
 // SpanID 返回 Span ID。
 func (c *Context) SpanID() string { return c.spanID }
 
-// TraceFlags 返回上游给的 W3C trace-flags；没有上游（链路的根）时第二个返回值为假（RFC-0003 规则 7）
+// TraceFlags 返回上游给的采样位（0x00 或 0x01）；没有上游（链路的根）时第二个返回值为假（RFC-0003 规则 7）
 func (c *Context) TraceFlags() (byte, bool) { return c.traceFlags, c.hasTraceFlags }
 
-// TraceParent 返回 W3C traceparent：标志写采样决定，上游给的标志原样写出（含 00）；没有上游时 SDK 没有采样器，写 01
+// TraceParent 返回 W3C traceparent：版本 00，标志只写采样位（00 或 01），上游的「不采样」原样传下去；没有上游时 SDK 没有采样器，写 01
 func (c *Context) TraceParent() string {
 	flags := SampledFlag
 	if c.hasTraceFlags {
@@ -323,14 +323,14 @@ func ParseTraceParent(traceParent string) (traceID, spanID string, sampled, ok b
 // parseTraceParent 解析 W3C traceparent，返回追踪 ID、Span ID 与原样的 trace-flags
 func parseTraceParent(traceParent string) (traceID, spanID string, flags byte, ok bool) {
 	match := traceParentPattern.FindStringSubmatch(traceParent)
-	if match == nil || match[2] == "00000000000000000000000000000000" || match[3] == "0000000000000000" {
+	if match == nil || match[1] == "00000000000000000000000000000000" || match[2] == "0000000000000000" {
 		return "", "", 0, false
 	}
-	decoded, err := hex.DecodeString(match[4])
+	decoded, err := hex.DecodeString(match[3])
 	if err != nil {
 		return "", "", 0, false
 	}
-	return match[2], match[3], decoded[0], true
+	return match[1], match[2], decoded[0], true
 }
 
 // NewTraceID 生成 32 位小写十六进制的追踪 ID。
