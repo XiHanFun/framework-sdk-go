@@ -63,7 +63,7 @@ func apply(t *testing.T, builder *pipeline.Builder, raw json.RawMessage) (err er
 	return nil
 }
 
-// TestPipelineOrderingFollowsTheVectors 回放 ordering.json：期望的 Dump 全文，以及每种错误的错误码与报出时机（RFC-0004，ADR-0235）
+// TestPipelineOrderingFollowsTheVectors 回放 ordering.json：期望的 Dump 全文，以及每种错误的错误码、报出时机与消息原文（RFC-0004，ADR-0235、ADR-0236）
 func TestPipelineOrderingFollowsTheVectors(t *testing.T) {
 	vectors, err := conformance.PipelineOrdering()
 	if err != nil {
@@ -104,6 +104,11 @@ func TestPipelineOrderingFollowsTheVectors(t *testing.T) {
 		var framework *primitives.FrameworkError
 		if !errors.As(failed, &framework) || framework.Code != c.Error || at != want {
 			t.Errorf("%s: error %v at %s, want %s at %s", c.Name, failed, at, c.Error, want)
+			continue
+		}
+		// 消息是配置错误的英文原文，逐字相等（RFC-0004 规则 8，ADR-0236）
+		if message := strings.ReplaceAll(c.Message, "{type}", vectorType); c.Message == "" || framework.Message != message {
+			t.Errorf("%s: message %q, want %q", c.Name, framework.Message, message)
 		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/xihanfun/framework-spec/conformance/rules"
 
 	"github.com/xihanfun/framework-sdk-go/invocation"
+	"github.com/xihanfun/framework-sdk-go/manifest"
 	"github.com/xihanfun/framework-sdk-go/operation"
 	"github.com/xihanfun/framework-sdk-go/pipeline"
 	"github.com/xihanfun/framework-sdk-go/primitives"
@@ -122,6 +124,29 @@ func kernelErrors(t *testing.T) map[string]*primitives.Error {
 		t.Fatal(err)
 	}
 	record(panicker.Invoke(invocation.Background(), operation.Request{ID: "jobs.boom"}).Outcome.Err())
+
+	// 清单读取失败（RFC-0002 解析规则 2，ADR-0236）：错误码都是 KERNEL_CAPABILITY_006，message 是 en-US 模板的句子
+	readManifest := func(data string) *primitives.Error {
+		var failure *primitives.Error
+		if _, err := manifest.Read([]byte(data)); !errors.As(err, &failure) {
+			t.Fatalf("%s: expected *primitives.Error, got %v", data, err)
+		}
+		return failure
+	}
+	const base = `"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable"`
+	record(readManifest(`{`))
+	record(readManifest(`null`))
+	record(readManifest(`{}`))
+	record(readManifest(`{` + base + `,"kind":"plugin"}`))
+	record(readManifest(`{` + base + `,"kind":"capability","isolation":"wasm"}`))
+	record(readManifest(`{` + base + `,"kind":"capability","provides":[{"id":"a.b","version":"1"},{"id":"a.b","version":"2"}]}`))
+	record(readManifest(`{` + base + `,"kind":"capability","requires":[{"id":"a.b","version":"1"},{"id":"a.b","version":"1"}]}`))
+	record(readManifest(`{` + base + `,"kind":"capability","bindings":[{"name":"db","type":"queue"},{"name":"db","type":"queue"}]}`))
+	var missing *primitives.Error
+	if _, err := manifest.ReadFile(filepath.Join(t.TempDir(), "absent.json")); !errors.As(err, &missing) {
+		t.Fatalf("missing manifest: %v", err)
+	}
+	record(missing)
 	return produced
 }
 
