@@ -1,20 +1,12 @@
 package primitives
 
 import (
-	"encoding/json"
-	"math"
-	"math/big"
-	"reflect"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
 // placeholderNamePattern 是占位符名文法（RFC-0010）：字母开头的字母、数字与下划线（按名字），或纯数字（按位置）
 var placeholderNamePattern = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]*|[0-9]+)$`)
-
-// maxFormatPrecision 是格式说明符精度的上限：更大的精度按不支持的说明符处理，不生成过长的文本
-const maxFormatPrecision = 999
 
 // segment 是模板里的一段：占位符（isPlaceholder 为真，name 与可选 format）或字面量
 type segment struct {
@@ -71,19 +63,30 @@ func Placeholders(template string) []string {
 }
 
 // FormatMessage 宽松格式化模板（RFC-0010）：{name} 取命名参数，{0} 取位置参数（键 "0"、"1"…），可带 :format；
-// {{ 与 }} 是转义；缺值的占位符连同 :format 原样保留，让遗漏可见
+// {{ 与 }} 是转义；缺值的占位符连同 :format 原样保留，让遗漏可见。按不变文化写数字
 func FormatMessage(template string, arguments map[string]any) string {
-	text, _ := render(template, arguments, false)
+	text, _ := render(template, arguments, "", false)
 	return text
 }
 
-// TryFormatMessage 严格格式化模板：任一占位符缺值返回假，供消息目录拒绝半截译文、调用方退回 Describe
+// TryFormatMessage 严格格式化模板：任一占位符缺值返回假，供消息目录拒绝半截译文、调用方退回 Describe。按不变文化写数字
 func TryFormatMessage(template string, arguments map[string]any) (string, bool) {
-	return render(template, arguments, true)
+	return render(template, arguments, "", true)
+}
+
+// FormatMessageIn 按区域宽松格式化模板：区域只改变小数点与分组符（见 FormatArgumentIn），其余同 FormatMessage
+func FormatMessageIn(locale, template string, arguments map[string]any) string {
+	text, _ := render(template, arguments, locale, false)
+	return text
+}
+
+// TryFormatMessageIn 按区域严格格式化模板，其余同 TryFormatMessage
+func TryFormatMessageIn(locale, template string, arguments map[string]any) (string, bool) {
+	return render(template, arguments, locale, true)
 }
 
 // render 逐段渲染模板；strict 时任一占位符缺值返回假
-func render(template string, arguments map[string]any, strict bool) (string, bool) {
+func render(template string, arguments map[string]any, locale string, strict bool) (string, bool) {
 	var builder strings.Builder
 	builder.Grow(len(template) + 16)
 	for index := 0; index < len(template); {
@@ -107,194 +110,60 @@ func render(template string, arguments map[string]any, strict bool) (string, boo
 			builder.WriteByte('}')
 			continue
 		}
-		builder.WriteString(FormatArgument(value, part.format))
+		builder.WriteString(FormatArgumentIn(locale, value, part.format))
 	}
 	return builder.String(), true
 }
 
-// FormatArgument 按格式说明符写一个参数（RFC-0010 的可移植子集；D、F、N 不区分大小写，d3 等同 D3，精度 0–99 必须支持）：
-//   - D[n]：整数，最少 n 位，补零，负号在前
-//   - X[n] / x[n]：非负整数的大写 / 小写十六进制，最少 n 位
-//   - F[n]：定点小数，n 位小数，缺省 2
-//   - N[n]：千分位用 ","、小数点用 "."，n 位小数，缺省 2，负号在前
+// FormatArgument 按格式说明符写一个参数（RFC-0010「模板」，ADR-0236），按不变文化；见 FormatArgumentIn
+func FormatArgument(value any, format string) string { return FormatArgumentIn("", value, format) }
+
+// FormatArgumentIn 按格式说明符与区域写一个参数（RFC-0010「模板」，ADR-0236）。值先归到值模型：空、布尔、字符串、64 位整数、双精度浮点、
+// 数组与对象（见 FormatValue）。说明符文本符合 ^[DdFfNnXx][0-9]{0,2}$ 时才认，其余（E2、G、P、0.00、yyyy、空说明符、带空格、D100、D-1）
+// 一律按无格式写出：
+//   - D[n]：整数，至少 n 位，补零，负号在前；D、F、N 不区分大小写
+//   - X[n] / x[n]：非负整数的大写 / 小写十六进制，至少 n 位
+//   - F[n]：定点小数，n 位小数，缺省 2；N[n]：同 F，整数部分带千分位
 //
-// F 与 N 按值的精确十进制展开舍入，正好一半时取偶（四舍六入五成双，与 .NET 一致）：0.125 写 F2 得 0.12，0.375 得 0.38，
-// 2.5 写 F0 得 2、3.5 得 4、-2.5 得 -2；2.675 的二进制值略小于 2.675，不是正好一半，写 F2 得 2.67。
-// 空说明符、子集之外的说明符（日期、自定义数字模式等 .NET 格式串）与值不适用的说明符按无格式输出，即 FormatValue
-func FormatArgument(value any, format string) string {
-	specifier, precision, ok := parseFormat(format)
-	if !ok {
-		return FormatValue(value)
-	}
-	switch specifier {
-	case 'D':
-		if integer, ok := integerOf(value); ok {
-			return padDigits(integer, 10, precision, false)
-		}
-	case 'X', 'x':
-		if integer, ok := integerOf(value); ok && integer.Sign() >= 0 {
-			return padDigits(integer, 16, precision, specifier == 'X')
-		}
-	case 'F', 'N':
-		if precision < 0 {
-			precision = 2
-		}
-		if text, ok := fixedOf(value, precision); ok {
-			if specifier == 'N' {
-				text = groupThousands(text)
-			}
-			return text
-		}
-	}
-	return FormatValue(value)
+// D 与 X 只用于整数，X 只用于非负整数，F 与 N 用于整数与浮点；用在别的值（含超出 64 位、按模型成为浮点的整数，字符串、布尔、null、
+// 数组与对象）上按无格式写出。F 与 N 按值的精确十进制展开舍入，正好一半时取偶（0.125 写 F2 得 0.12，2.5 写 F0 得 2），写出全部整数位，
+// 负数舍入成零时保留负号（-0.00）。精度是字母后的 0–2 位数字，可以有前导零（F02 即 F2）。
+// 区域只改变小数点与分组符（de-DE、es-ES、pt-BR 是 , 与 .，fr-FR 是 , 与 U+202F，ru-RU 是 , 与 U+00A0，其余区域与不给区域是 . 与 ,，
+// 区域名不区分大小写）：小数点用在无格式的浮点（含指数写法的尾数）与 F、N 上，分组符只用在 N 上；整数无格式时不分组，D、X 与数组、
+// 对象里的数字不受区域影响；负号、NaN 与 Infinity 不随区域变化
+func FormatArgumentIn(locale string, value any, format string) string {
+	specifier, precision := parseSpecifier(format)
+	return valueText(normalize(value), specifier, precision, locale)
 }
 
-// parseFormat 解析可移植子集的说明符：一个字母后跟可选的十进制精度，精度缺省为 -1。D、F、N 不区分大小写（与 .NET 一致），
-// 返回大写；X 与 x 分别是大写与小写的十六进制，原样返回
-func parseFormat(format string) (byte, int, bool) {
-	if format == "" || !strings.ContainsRune("DdXxFfNn", rune(format[0])) {
-		return 0, 0, false
+// parseSpecifier 解析可移植的说明符 ^[DdFfNnXx][0-9]{0,2}$：返回规范化的字母（D、F、N 取大写，X 与 x 保留大小写）与精度
+// （没有写出时为 -1）；不合文法时字母为 0，按无格式写出
+func parseSpecifier(format string) (byte, int) {
+	if len(format) == 0 || len(format) > 3 {
+		return 0, -1
 	}
-	specifier := format[0]
-	if specifier == 'd' || specifier == 'f' || specifier == 'n' {
-		specifier -= 'a' - 'A'
+	var letter byte
+	switch format[0] {
+	case 'D', 'd':
+		letter = 'D'
+	case 'F', 'f':
+		letter = 'F'
+	case 'N', 'n':
+		letter = 'N'
+	case 'X', 'x':
+		letter = format[0]
+	default:
+		return 0, -1
 	}
 	if len(format) == 1 {
-		return specifier, -1, true
+		return letter, -1
 	}
-	digits := format[1:]
-	for index := 0; index < len(digits); index++ {
-		if digits[index] < '0' || digits[index] > '9' {
-			return 0, 0, false
+	precision := 0
+	for _, digit := range []byte(format[1:]) {
+		if digit < '0' || digit > '9' {
+			return 0, -1
 		}
+		precision = precision*10 + int(digit-'0')
 	}
-	precision, err := strconv.Atoi(digits)
-	if err != nil || precision > maxFormatPrecision {
-		return 0, 0, false
-	}
-	return specifier, precision, true
-}
-
-// padDigits 写整数的 base 进制数字，不足 precision 位时补零，负号在前
-func padDigits(integer *big.Int, base, precision int, upper bool) string {
-	digits := new(big.Int).Abs(integer).Text(base)
-	if upper {
-		digits = strings.ToUpper(digits)
-	}
-	if len(digits) < precision {
-		digits = strings.Repeat("0", precision-len(digits)) + digits
-	}
-	if integer.Sign() < 0 {
-		return "-" + digits
-	}
-	return digits
-}
-
-// fixedOf 写 precision 位小数的定点小数，按值的精确十进制展开舍入、正好一半时取偶：有限浮点交给 strconv.FormatFloat，
-// 它按二进制值的精确展开舍入，与 .NET 的格式化一致（负零与舍入成零的负数写 -0.00）；整数与 json.Number 按精确的有理数舍入。
-// NaN、无穷与非数值返回假
-func fixedOf(value any, precision int) (string, bool) {
-	reflected := reflect.ValueOf(value)
-	if kind := reflected.Kind(); kind == reflect.Float32 || kind == reflect.Float64 {
-		float := reflected.Float()
-		if math.IsInf(float, 0) || math.IsNaN(float) {
-			return "", false
-		}
-		return strconv.FormatFloat(float, 'f', precision, 64), true
-	}
-	rational, ok := rationalOf(value)
-	if !ok {
-		return "", false
-	}
-	return formatFixed(rational, precision), true
-}
-
-// formatFixed 写有理数的 precision 位定点小数：按精确值舍入，正好一半时取偶，负号在前（舍入成零的负数写 -0.00，与 strconv 一致）
-func formatFixed(value *big.Rat, precision int) string {
-	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(precision)), nil)
-	numerator := new(big.Int).Mul(new(big.Int).Abs(value.Num()), scale)
-	quotient, remainder := new(big.Int).QuoRem(numerator, value.Denom(), new(big.Int))
-	switch remainder.Lsh(remainder, 1).Cmp(value.Denom()) {
-	case 1:
-		quotient.Add(quotient, big.NewInt(1))
-	case 0:
-		if quotient.Bit(0) == 1 {
-			quotient.Add(quotient, big.NewInt(1))
-		}
-	}
-	digits := quotient.String()
-	if precision > 0 {
-		if len(digits) <= precision {
-			digits = strings.Repeat("0", precision-len(digits)+1) + digits
-		}
-		digits = digits[:len(digits)-precision] + "." + digits[len(digits)-precision:]
-	}
-	if value.Sign() < 0 {
-		return "-" + digits
-	}
-	return digits
-}
-
-// groupThousands 给定点小数文本的整数部分加千分位逗号
-func groupThousands(text string) string {
-	sign := ""
-	if strings.HasPrefix(text, "-") {
-		sign, text = "-", text[1:]
-	}
-	integer, fraction := text, ""
-	if point := strings.IndexByte(text, '.'); point >= 0 {
-		integer, fraction = text[:point], text[point:]
-	}
-	var builder strings.Builder
-	for index, digit := range integer {
-		if index > 0 && (len(integer)-index)%3 == 0 {
-			builder.WriteByte(',')
-		}
-		builder.WriteRune(digit)
-	}
-	return sign + builder.String() + fraction
-}
-
-// integerOf 取整数值：整数类型（含命名类型），以及值为整数的有限浮点与 json.Number（JSON 线上的数字不分整数与浮点）
-func integerOf(value any) (*big.Int, bool) {
-	switch typed := value.(type) {
-	case json.Number:
-		if integer, ok := new(big.Int).SetString(typed.String(), 10); ok {
-			return integer, true
-		}
-		if rational, ok := new(big.Rat).SetString(typed.String()); ok && rational.IsInt() {
-			return rational.Num(), true
-		}
-		return nil, false
-	}
-	reflected := reflect.ValueOf(value)
-	switch reflected.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return big.NewInt(reflected.Int()), true
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return new(big.Int).SetUint64(reflected.Uint()), true
-	case reflect.Float32, reflect.Float64:
-		float := reflected.Float()
-		if math.IsInf(float, 0) || math.IsNaN(float) || float != math.Trunc(float) {
-			return nil, false
-		}
-		integer, _ := big.NewFloat(float).Int(nil)
-		return integer, true
-	}
-	return nil, false
-}
-
-// rationalOf 取整数与 json.Number 的精确有理数（json.Number 是精确的十进制值）；浮点由 fixedOf 交给 strconv
-func rationalOf(value any) (*big.Rat, bool) {
-	if number, ok := value.(json.Number); ok {
-		return new(big.Rat).SetString(number.String())
-	}
-	reflected := reflect.ValueOf(value)
-	switch reflected.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return new(big.Rat).SetInt64(reflected.Int()), true
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return new(big.Rat).SetUint64(reflected.Uint()), true
-	}
-	return nil, false
+	return letter, precision
 }

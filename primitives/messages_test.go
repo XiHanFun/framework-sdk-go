@@ -25,7 +25,9 @@ func TestFormatValueWritesPortableText(t *testing.T) {
 		{42, "42"},
 		{-7, "-7"},
 		{int64(math.MinInt64), "-9223372036854775808"},
-		{uint64(math.MaxUint64), "18446744073709551615"},
+		// 超出 int64 的整数按值模型是双精度浮点（ADR-0236）
+		{uint64(math.MaxUint64), "1.8446744073709552E+19"},
+		{uint64(math.MaxInt64), "9223372036854775807"},
 		{true, "true"},
 		{false, "false"},
 		{nil, ""},
@@ -54,9 +56,12 @@ func TestFormatValueWritesPortableText(t *testing.T) {
 		{math.Inf(1), "Infinity"},
 		{math.Inf(-1), "-Infinity"},
 		{0.30000000000000004, "0.30000000000000004"},
-		{float32(0.1), "0.1"},
+		// float32 先换成最接近的 float64
+		{float32(0.1), "0.10000000149011612"},
 		{float32(2.5), "2.5"},
-		{json.Number("7.50"), "7.50"},
+		// json.Number 按值模型：小数写法是双精度浮点，整数写法是整数
+		{json.Number("7.50"), "7.5"},
+		{json.Number("9007199254740993"), "9007199254740993"},
 		{quantity(3), "3"},
 		{label("l"), "l"},
 		{primitives.Experimental, "experimental"},

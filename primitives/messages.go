@@ -39,7 +39,7 @@ func Positional(values ...any) map[string]any {
 }
 
 // Describe 在没有文案时描述一个消息（RFC-0010）：没有参数时只有键，有参数时写 key (name=value, …)；
-// 值按 FormatValue 写，参数按名字的序数顺序（逐个 UTF-16 码元比较，与 .NET 的 StringComparer.Ordinal 相同，ADR-0235）排列
+// 值按 FormatValue 写（数组与对象是紧凑的 JSON），参数按名字的序数顺序（逐个 UTF-16 码元比较，与 .NET 的 StringComparer.Ordinal 相同，ADR-0235）排列
 func Describe(key string, arguments map[string]any) string {
 	if len(arguments) == 0 {
 		return key
@@ -149,33 +149,34 @@ func DefaultTemplate(key string) (string, bool) {
 // Catalog 是一份内存消息目录：区域 → 键 → 模板；实现 MessageResolver，区域没有该键时回退到 en-US，区域名比较不区分大小写
 type Catalog map[string]map[string]string
 
-// Resolve 实现 MessageResolver（RFC-0010）：按严格格式化解析，找不到键或任一占位符缺值即返回假，调用方退回 Describe
+// Resolve 实现 MessageResolver（RFC-0010）：按严格格式化解析，找不到键或任一占位符缺值即返回假，调用方退回 Describe。
+// 数字按命中模板的区域取小数点与分组符（与 .NET 的本地化器一样，回退到 en-US 的模板按 en-US 写）
 func (c Catalog) Resolve(key, locale string, arguments map[string]any) (string, bool) {
-	template, ok := c.template(locale, key)
+	template, resolved, ok := c.template(locale, key)
 	if !ok && !strings.EqualFold(locale, DefaultCatalogLocale) {
-		template, ok = c.template(DefaultCatalogLocale, key)
+		template, resolved, ok = c.template(DefaultCatalogLocale, key)
 	}
 	if !ok {
 		return "", false
 	}
-	return TryFormatMessage(template, arguments)
+	return TryFormatMessageIn(resolved, template, arguments)
 }
 
-// template 按区域（不区分大小写）与键取模板
-func (c Catalog) template(locale, key string) (string, bool) {
+// template 按区域（不区分大小写）与键取模板，并返回命中的区域
+func (c Catalog) template(locale, key string) (string, string, bool) {
 	if templates, ok := c[locale]; ok {
 		if template, ok := templates[key]; ok {
-			return template, true
+			return template, locale, true
 		}
 	}
 	for candidate, templates := range c {
 		if candidate != locale && strings.EqualFold(candidate, locale) {
 			if template, ok := templates[key]; ok {
-				return template, true
+				return template, candidate, true
 			}
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 // DefaultCatalogLocale 是消息目录的默认区域：目录里找不到请求区域的键时回退到它（RFC-0010）

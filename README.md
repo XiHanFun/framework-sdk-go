@@ -113,6 +113,28 @@ type CreateOrder struct {
 
 `Manifest.Validate` 先按 Schema 核对清单写出的形态，再核对跨字段约束，码是 `PRIMITIVES_VALIDATION_001`（与 .NET 的 `Manifest.Validate` 一致）。`manifest.Write` 的排版写死（RFC-0002「写出」）：两个空格缩进、LF、末尾不换行、`": "`、空数组写 `[]`、成员顺序固定、列表总写、`role` 缺省写 `provider`、`activation` 缺省写 `["onStartup"]`、`$schema` 固定，字符串只转义必须转义的字符；与 .NET 一样不做校验。
 
+### 消息模板
+
+模板参数先归到 RFC-0010「模板」的值模型（ADR-0236）——空、布尔、字符串、64 位整数、双精度浮点、数组与对象——再按说明符与区域写出。Go 的类型这样归：
+
+| Go 的值 | 值模型 | 说明 |
+| --- | --- | --- |
+| `nil`、`nil` 指针、`nil` 切片与映射 | 空 | 顶层写空串，嵌套写 `null` |
+| `bool` 与底层是 `bool` 的类型 | 布尔 | `true` / `false` |
+| `string` 与底层是 `string` 的类型 | 字符串 | 原样 |
+| `int`、`int8`…`int64`，`uint`…`uint64` 在 int64 范围内 | 整数 | `rune` 是 `int32`，按整数写；要写一个字符用 `string(r)` |
+| 超出 int64 的 `uint64`、`*big.Int` | 浮点 | `D` 与 `X` 不再适用 |
+| `float64`、`float32`、`*big.Float`、`*big.Rat` | 浮点 | `float32` 换成最接近的 `float64`：`float32(0.1)` 写 `0.10000000149011612` |
+| `json.Number`、`json.RawMessage` | 按 JSON 读 | 整数写法且在 64 位范围内是整数，其余数字是浮点 |
+| 切片、数组（含 `[]byte`） | 数组 | |
+| 映射 | 对象 | 键写成它的文本 |
+| 实现 `error` / `fmt.Stringer` 的值 | 字符串 | 取 `Error()` / `String()`：`time.Time`、`time.Duration`、带 `String` 的枚举（`primitives.Stability`）都是 Go 自己的文本 |
+| 其余（结构体、复数等） | 字符串 | `fmt.Sprint` 的文本 |
+
+Go 自己的文本（日期、`Duration`、结构体）不跨语言：插件的目录要在宿主上格式化时，先把这些值转成字符串再放进参数。数组与对象写成紧凑的 JSON，对象成员按名字的 UTF-16 码元序排序、嵌套的 `null` 写 `null`、数字与顶层写法相同，超过 64 层的容器写 `null`。说明符只认 `^[DdFfNnXx][0-9]{0,2}$`，`E2`、`G`、`P`、`0.00`、`yyyy`、空说明符、带空格、`D100` 都按无格式写；`D` 与 `X` 只用于整数，`X` 只用于非负整数，`F` 与 `N` 用于整数与浮点，用在别的值上都按无格式写。
+
+格式化可以带区域：`primitives.FormatMessageIn(locale, template, arguments)`、`TryFormatMessageIn`、`FormatArgumentIn(locale, value, format)`，`Catalog.Resolve` 按命中模板的区域取符号（回退到 en-US 的模板按 en-US 写）。区域只改变小数点与分组符，取自规范的固定表：de-DE、es-ES、pt-BR 是 `,` 与 `.`，fr-FR 是 `,` 与 U+202F，ru-RU 是 `,` 与 U+00A0，en-US、zh-CN、zh-TW、ja-JP、ko-KR、表外的区域与不给区域都是 `.` 与 `,`，区域名不区分大小写。小数点用在无格式的浮点（含指数写法的尾数，de-DE 的 `1.5e20` 写 `1,5E+20`）与 `F`、`N` 上，分组符只用在 `N` 上；整数无格式时不分组，`D`、`X` 与数组、对象里的数字不受区域影响，负号、`NaN`、`Infinity` 也不变。不带区域的 `FormatMessage`、`TryFormatMessage`、`FormatArgument`、`FormatValue` 与 `Describe` 按不变文化。
+
 ## 破坏性改动与迁移
 
 本节列出与规范、.NET 参考实现对齐时改掉的旧行为，以及调用方怎么改。
@@ -133,7 +155,7 @@ type CreateOrder struct {
 - 超时与取消的归因只看截止令牌（RFC-0004、ADR-0092）：`invocation.Context.Cancellation()` 在截止时间已到时报 `KERNEL_TIMEOUT_001`，即使调用方先取消了；截止令牌没有触发时报 `KERNEL_CANCELLED_001`。旧版按先触发的那个报，调用方先取消、随后到了截止时间时仍是取消。新增 `Context.DeadlineExceeded()`。`operation.Invoker` 承担 .NET `DeadlineMiddleware` 的归因：调用开始时截止时间已过即 `KERNEL_TIMEOUT_001`（`kernel.invocation.deadline_before_start`），不进管道；下游写下 `KERNEL_CANCELLED_001` 而截止令牌已触发时改写为 `KERNEL_TIMEOUT_001`。按错误码决定重试的调用方要按超时处理这类调用。
 - `operation.Current`、`RequestOf`、`ResponsePayloadOf` 只在调用期间、在经管道传下来的上下文上可见：每次调用的状态（描述、请求、终点、响应载荷）放在为这次调用派生的上下文里，不再写进对象袋，调用结束后调用方的上下文与对象袋保持原样。旧版把它们留在对象袋里，类型化调用的终点不清，同一上下文随后的 JSON 调用会执行上一次的类型化终点（缺陷）。调用结束后还在调用方上下文上读这三项的代码要改为在中间件里读。
 - `primitives.Unexpected` 的参数改为 `(code, messageKey, details, inner)`，与其他工厂和 `NewError` 一致（RFC-0001、ADR-0137）；旧版是 `(code, messageKey, inner, details)`。两个参数类型不同，旧调用编译即报错，交换后两个实参即可。
-- 模板的格式说明符改为可移植子集（RFC-0010），不再按 Go 的 `fmt` 动词解释：`D[n]`（整数，最少 n 位补零）、`X[n]` / `x[n]`（非负整数的十六进制）、`F[n]`（定点小数，缺省 2 位）、`N[n]`（千分位 `,`、小数点 `.`，缺省 2 位）；F 与 N 按值的精确十进制展开舍入，正好一半时取偶（四舍六入五成双，与 .NET 一致：0.125 写 `F2` 得 `0.12`，2.5 写 `F0` 得 `2`）。D、F、N 不区分大小写（`d3` 等同 `D3`，旧版把小写当成不支持），精度 0–99 都支持。其他说明符（日期、自定义数字模式）是 .NET 格式串，SDK 按无格式输出。迁移：`{count:%03d}` 改 `{count:D3}`，`{n:%x}` 改 `{n:x}`，`{n:%.2f}` 改 `{n:F2}`；插件目录在握手时交给 .NET 宿主按 .NET 规则格式化，旧的 `%` 写法到了宿主那里会被当作自定义数字格式，必须改。
+- 模板的格式说明符改为可移植子集（RFC-0010），不再按 Go 的 `fmt` 动词解释：`D[n]`（整数，最少 n 位补零）、`X[n]` / `x[n]`（非负整数的十六进制）、`F[n]`（定点小数，缺省 2 位）、`N[n]`（千分位 `,`、小数点 `.`，缺省 2 位）；F 与 N 按值的精确十进制展开舍入，正好一半时取偶（四舍六入五成双，与 .NET 一致：0.125 写 `F2` 得 `0.12`，2.5 写 `F0` 得 `2`）。D、F、N 不区分大小写（`d3` 等同 `D3`，旧版把小写当成不支持），精度是字母后的 0–2 位数字（ADR-0236 起，见下文）。其他说明符（日期、自定义数字模式）是 .NET 格式串，SDK 按无格式输出。迁移：`{count:%03d}` 改 `{count:D3}`，`{n:%x}` 改 `{n:x}`，`{n:%.2f}` 改 `{n:F2}`；插件目录在握手时交给 .NET 宿主按 .NET 规则格式化，旧的 `%` 写法到了宿主那里会被当作自定义数字格式，必须改。
 - 模板支持 `{{` / `}}` 转义；占位符名按 `^([A-Za-z][A-Za-z0-9_]*|[0-9]+)$`，下划线开头的 `{_x}` 不再是占位符而是字面量；没有闭合的 `{` 及其后的文本原样保留。
 - `primitives.Catalog.Resolve` 改为严格解析：找不到键或任一占位符缺值即返回假，`Error.Message` 随之退回 `Describe`；旧版缺值时仍返回半截译文。需要宽松格式化时直接用 `FormatMessage`，需要严格格式化时用新增的 `TryFormatMessage`。区域名比较不再区分大小写。
 - 消息参数的文本形式改由 `primitives.FormatValue` 统一（模板与 `Describe` 共用，RFC-0010）：`nil` 与 `nil` 指针写空串，旧版写 `<nil>`；浮点在 1e-4 ≤ |x| < 1e17 或 x = 0 时写最短往返的十进制、不用指数，`2.0` 写 `2`、1e16 写 `10000000000000000`；范围之外写 `1E+17`、`9.9E-05`、`5E-324` 这样的指数形式，负零写 `-0`，非数与无穷写 `NaN`、`Infinity`、`-Infinity`（ADR-0235）。F 与 N 写出全部整数位，负数舍入成零时保留负号（`-0.00`）。依赖旧文本（如在日志里匹配 `<nil>`）的地方要改。
@@ -142,6 +164,7 @@ type CreateOrder struct {
 - 线上的数字按值模型往返（ADR-0236）：`Result[any]`、`Result[map[string]any]` 的值与 `Error.Details` 里的整数读成 `int64`，旧版由 `encoding/json` 读成 `float64`（超过 2^53 的整数因此失真）；整数值的浮点写成 `2.0`、`-0.0`（旧版写 `2`、`-0`，对方读成整数）；`NaN` 与无穷写成字符串（旧版 `json.Marshal` 报错，整个 `Result` 写不出）。插件协议的 `Error.details` 照同一模型读写，读回的数组与对象是 `[]any` 与 `map[string]any`，不是合法 JSON 对象的细节丢弃。`Result`、`Maybe`、`ID` 的类型化值改用 SDK 的解码：成员名区分大小写（旧版 `"Count"` 也能读进 `count`）、整数不接受 `1.0`、整数与布尔不接受 `null`、数字不从字符串读。迁移：按 `float64` 断言细节里整数的代码改为同时接受 `int64`（或用 `primitives.FormatValue` 取文本）；发送端照字段的 JSON 名字写成员。
 - 操作载荷按 RFC-0011 规则 2 解码（ADR-0236），不再交给 `encoding/json`：成员名区分大小写（旧版 `"Quantity"` 也能读进 `quantity`）；`int32` 等窄整数按自己的范围核对；浮点字段的 `1e400` 读成无穷（旧版报类型不符）；`null` 落在整数、浮点、布尔的切片项与映射值上也报类型不符；新增必填标签 `xihan:"required"`；几处问题同时存在时按文本顺序报第一处，缺少的必填成员在所在对象结束时报。迁移：调用方照字段的 JSON 名字写成员；需要接受 `null` 的数值改用指针；契约要求必填的成员加上 `xihan:"required"`。
 - 清单的读取与写出与 .NET 逐字一致（RFC-0002，ADR-0236）：`manifest.Read`、`ReadFile` 的错误由 `*primitives.FrameworkError`（`PRIMITIVES_VALIDATION_001`，英文说明）改为 `*primitives.Error`，码 `KERNEL_CAPABILITY_006`，键是 `kernel.manifest.invalid_json` / `empty` / `invalid` / `file_missing` 或 `primitives.manifest.*`，参数只有路径（`reason`）、`path` 或 `id`；`Validate` 也返回 `*primitives.Error`。接口版本超过 2147483647 拒绝（旧版到 int 的上限，`ParseRequirement`、`ParseDeclaration` 同样）；中间件名为空、`contributes.health` 不合文法开始拒绝。`ReadFile` 跳过开头的 UTF-8 BOM，`Read` 不跳过。`Write` 改为规范的排版：列表总写（`[]`）、`role` 与 `activation` 写出缺省值、`requires[].optional` 与 `bindings[].required` 总写、字符串不再转义 `<`、`>`、`&` 与非 ASCII，`Write` 不再校验（与 .NET 一样），`Activation` 为空切片时写 `["onStartup"]`。只有 Wasm 插件能贡献中间件的规则从 `manifest.Read` 移到 `plugin.Serve`（.NET 宿主在发现插件时核对，`ManifestReader` 不核对）。迁移：按错误码匹配的地方改为 `errors.As(err, &primitivesError)` 并看 `Code` 与 `MessageKey`；按英文说明匹配的地方改为看路径；比较写出文本的测试更新期望值。
+- 模板的值按值模型写出（RFC-0010「模板」，ADR-0236）：数组与对象写成紧凑的 JSON（旧版是 `fmt.Sprint` 的 `[1 a]`、`map[a:1]`）；超出 int64 的 `uint64` 是浮点（旧版写全部数字，`D` 照样补零）；`float32` 按 `float64` 的值写（`float32(0.1)` 由 `0.1` 变为 `0.10000000149011612`）；`json.Number` 的小数写法是浮点，`F` 按二进制值舍入（`2.675` 写 `F2` 由 `2.68` 变为 `2.67`），`7.50` 写 `7.5`。说明符只认 `^[DdFfNnXx][0-9]{0,2}$`：精度最多两位（旧版到 999），`D` 用在浮点上（含 `2.0`）按无格式写（旧版对整数值的浮点补零）。迁移：要固定写法的值先在调用方转成字符串；需要三位以上精度时改在代码里格式化。新增 `FormatMessageIn`、`TryFormatMessageIn`、`FormatArgumentIn`，`Catalog.Resolve` 按命中模板的区域写小数点与分组符（旧版一律按不变文化），依赖旧文本的地方要改。
 
 ## 开发
 
