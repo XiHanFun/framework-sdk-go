@@ -104,12 +104,12 @@ type constraint struct {
 	before  bool
 }
 
-// Builder 收集中间件与顺序约束，按规范排序后构建管道。登记与约束的错误（重复登记、约束主体未登记或有歧义）
-// 在登记或声明时记下，Describe、Dump 与 Build 返回第一个；约束目标在排序时解析
+// Builder 收集中间件与顺序约束，按规范排序后构建管道。报错的时机照 RFC-0004 规则 8（ADR-0235）：重复登记、未知阶段、
+// 约束主体未登记或按名字有歧义在登记时立即报，是编程错误，panic FrameworkError（与 http.ServeMux 登记冲突时一样）；
+// 约束目标未登记、有歧义、跨阶段与成环在排序时报，由 Describe、Dump 与 Build 返回
 type Builder struct {
 	registrations []*registration
 	constraints   []constraint
-	err           error
 }
 
 // NewBuilder 创建空的构建器。
@@ -120,18 +120,21 @@ func (b *Builder) Use(middleware Middleware) *Builder {
 	return b.UseAt(middleware, primitives.Transaction, End, AppOwner)
 }
 
-// UseAt 登记中间件到指定阶段。
+// UseAt 登记中间件到指定阶段；阶段不是十一个阶段之一时 panic KERNEL_PIPELINE_002，重复登记 panic KERNEL_PIPELINE_003
 func (b *Builder) UseAt(middleware Middleware, stage primitives.PipelineStage, placement Placement, owner string) *Builder {
 	return b.add(middleware, "", stage, placement, owner)
 }
 
-// UseNamedInstance 按名字登记同一类型的另一个实例（规则 7）；名字在类型内唯一。
+// UseNamedInstance 按名字登记同一类型的另一个实例（规则 7）；名字在类型内唯一，重复 panic KERNEL_PIPELINE_003
 func (b *Builder) UseNamedInstance(instance string, middleware Middleware, stage primitives.PipelineStage, placement Placement, owner string) *Builder {
 	return b.add(middleware, instance, stage, placement, owner)
 }
 
-// add 登记一个中间件：同一类型的默认实例只登记一次、命名实例的名字在类型内唯一，重复即登记错误（RFC-0004 规则 7）
+// add 登记一个中间件：阶段必须合法；同一类型的默认实例只登记一次、命名实例的名字在类型内唯一（RFC-0004 规则 7），不合即 panic
 func (b *Builder) add(middleware Middleware, instance string, stage primitives.PipelineStage, placement Placement, owner string) *Builder {
+	if !stage.IsValid() {
+		panic(&primitives.FrameworkError{Code: ErrorCodeUnknownStage, Message: fmt.Sprintf("'%s' is not a pipeline stage.", stage)})
+	}
 	if owner == "" {
 		owner = AppOwner
 	}
@@ -141,37 +144,34 @@ func (b *Builder) add(middleware Middleware, instance string, stage primitives.P
 			continue
 		}
 		if instance == "" {
-			b.fail(registrationError(fmt.Sprintf("the middleware '%s' is already registered; each middleware type may appear only once in a pipeline unless its instances are named", descriptor.Middleware)))
-		} else {
-			b.fail(registrationError(fmt.Sprintf("the middleware '%s' named '%s' is already registered; instance names must be unique within a type", descriptor.Middleware, instance)))
+			panic(registrationError(fmt.Sprintf("the middleware '%s' is already registered; each middleware type may appear only once in a pipeline unless its instances are named", descriptor.Middleware)))
 		}
-		return b
+		panic(registrationError(fmt.Sprintf("the middleware '%s' named '%s' is already registered; instance names must be unique within a type", descriptor.Middleware, instance)))
 	}
 	b.registrations = append(b.registrations, &registration{middleware: middleware, descriptor: descriptor, order: len(b.registrations)})
 	return b
 }
 
 // Before 约束 middleware 在 other 之前（RFC-0004 规则 7）。两端都是中间件名：命名实例的实例名，或中间件的类型名
-// （该类型只登记了一个实例时）。middleware 是约束主体，声明时必须已登记；other 在排序时解析
+// （该类型只登记了一个实例时）。middleware 是约束主体，声明时必须已登记，未登记或有歧义 panic KERNEL_PIPELINE_003；
+// other 在排序时解析
 func (b *Builder) Before(middleware, other string) *Builder {
 	return b.constrain(middleware, other, true)
 }
 
-// After 约束 middleware 在 other 之后；名字的解析同 Before
+// After 约束 middleware 在 other 之后；名字的解析与报错同 Before
 func (b *Builder) After(middleware, other string) *Builder {
 	return b.constrain(middleware, other, false)
 }
 
-// constrain 声明一条约束：主体按名字解析成当前已登记的中间件，未登记或有歧义即登记错误
+// constrain 声明一条约束：主体按名字解析成当前已登记的中间件，未登记或有歧义即 panic
 func (b *Builder) constrain(middleware, other string, before bool) *Builder {
 	subject, err := b.find(middleware)
 	if err != nil {
-		b.fail(err)
-		return b
+		panic(err)
 	}
 	if subject == nil {
-		b.fail(registrationError(fmt.Sprintf("the middleware '%s' is not registered, so no ordering constraint can be declared for it", middleware)))
-		return b
+		panic(registrationError(fmt.Sprintf("the middleware '%s' is not registered, so no ordering constraint can be declared for it", middleware)))
 	}
 	b.constraints = append(b.constraints, constraint{subject: subject, target: other, before: before})
 	return b
@@ -190,13 +190,6 @@ func (b *Builder) find(name string) (*registration, error) {
 		found = registration
 	}
 	return found, nil
-}
-
-// fail 记下第一个登记错误
-func (b *Builder) fail(err error) {
-	if b.err == nil {
-		b.err = err
-	}
 }
 
 // Describe 返回排序后的中间件描述。
@@ -247,9 +240,6 @@ func (b *Builder) Build(terminal Step) (Step, error) {
 
 // sorted 按规则排序：先阶段；阶段内先 Placement，再归属，再登记顺序，最后按约束做稳定拓扑排序。
 func (b *Builder) sorted() ([]*registration, error) {
-	if b.err != nil {
-		return nil, b.err
-	}
 	// 约束目标在排序时按名字解析：未登记、有歧义、跨阶段都是登记错误
 	resolved := make([][2]*registration, 0, len(b.constraints))
 	for _, constraint := range b.constraints {

@@ -84,8 +84,12 @@ func TestCyclesAndBadConstraintsAreRejected(t *testing.T) {
 		Before("A", "B")
 	assertCode(t, crossStage, pipeline.ErrorCodeRegistration)
 
-	duplicate := pipeline.NewBuilder().UseAt(pipeline.Func("A", nil), primitives.Validate, pipeline.End, "app").UseAt(pipeline.Func("A", nil), primitives.Validate, pipeline.End, "app")
-	assertCode(t, duplicate, pipeline.ErrorCodeRegistration)
+	duplicate := pipeline.NewBuilder().UseAt(pipeline.Func("A", nil), primitives.Validate, pipeline.End, "app")
+	assertPanicCode(t, pipeline.ErrorCodeRegistration, func() { duplicate.UseAt(pipeline.Func("A", nil), primitives.Validate, pipeline.End, "app") })
+	assertPanicCode(t, pipeline.ErrorCodeUnknownStage, func() { duplicate.UseAt(pipeline.Func("B", nil), primitives.PipelineStage(42), pipeline.End, "app") })
+	if _, err := duplicate.Describe(); err != nil {
+		t.Errorf("a rejected registration leaves the builder as it was: %v", err)
+	}
 
 	if _, err := pipeline.ParseStage("middle"); err == nil {
 		t.Error("unknown stage")
@@ -106,7 +110,8 @@ func TestNamedInstancesAreDistinctButAmbiguousForTypeConstraints(t *testing.T) {
 	if dump != "observe      Guard[guard-a]\nobserve      Guard[guard-b]\n" {
 		t.Errorf("dump:\n%s", dump)
 	}
-	assertCode(t, builder.UseAt(pipeline.Func("Other", nil), primitives.Observe, pipeline.End, "app").Before("Guard", "Other"), pipeline.ErrorCodeRegistration)
+	builder.UseAt(pipeline.Func("Other", nil), primitives.Observe, pipeline.End, "app")
+	assertPanicCode(t, pipeline.ErrorCodeRegistration, func() { builder.Before("Guard", "Other") })
 }
 
 func TestShortCircuitSkipsDownstream(t *testing.T) {
@@ -170,11 +175,10 @@ func TestConstraintsByInstanceName(t *testing.T) {
 
 // TestConstraintSubjectMustBeRegisteredWhenDeclared 核对约束主体在声明时必须已登记，目标在排序时解析、可以晚于约束登记
 func TestConstraintSubjectMustBeRegisteredWhenDeclared(t *testing.T) {
-	late := pipeline.NewBuilder().
-		Before("A", "B").
-		UseAt(pipeline.Func("A", nil), primitives.Validate, pipeline.End, "app").
-		UseAt(pipeline.Func("B", nil), primitives.Validate, pipeline.End, "app")
-	assertCode(t, late, pipeline.ErrorCodeRegistration)
+	assertPanicCode(t, pipeline.ErrorCodeRegistration, func() { pipeline.NewBuilder().Before("A", "B") })
+	assertPanicCode(t, pipeline.ErrorCodeRegistration, func() {
+		pipeline.NewBuilder().UseAt(pipeline.Func("B", nil), primitives.Validate, pipeline.End, "app").After("A", "B")
+	})
 
 	targetLater := pipeline.NewBuilder().
 		UseAt(pipeline.Func("B", nil), primitives.Validate, pipeline.End, "app").
@@ -198,7 +202,8 @@ func TestAmbiguousNamesAreRejected(t *testing.T) {
 			UseNamedInstance("guard-b", pipeline.Func("Guard", nil), primitives.Observe, pipeline.End, "app").
 			UseAt(pipeline.Func("Audit", nil), primitives.Observe, pipeline.End, "app")
 	}
-	assertCode(t, two().Before("Guard", "Audit"), pipeline.ErrorCodeRegistration)
+	// 主体有歧义在声明时报，目标有歧义在排序时报
+	assertPanicCode(t, pipeline.ErrorCodeRegistration, func() { two().Before("Guard", "Audit") })
 	assertCode(t, two().Before("Audit", "Guard"), pipeline.ErrorCodeRegistration)
 
 	collision := pipeline.NewBuilder().
@@ -208,10 +213,22 @@ func TestAmbiguousNamesAreRejected(t *testing.T) {
 	assertCode(t, collision.Before("Trace", "Audit"), pipeline.ErrorCodeRegistration)
 
 	duplicateInstance := pipeline.NewBuilder().
-		UseNamedInstance("guard-a", pipeline.Func("Guard", nil), primitives.Observe, pipeline.End, "app").
-		UseNamedInstance("guard-a", pipeline.Func("Guard", nil), primitives.Observe, pipeline.End, "xihan.other")
-	assertCode(t, duplicateInstance, pipeline.ErrorCodeRegistration)
-	if _, err := duplicateInstance.Build(func(*invocation.Context) primitives.Result[primitives.Unit] { return primitives.Success() }); err == nil {
-		t.Error("Build reports the registration error too")
-	}
+		UseNamedInstance("guard-a", pipeline.Func("Guard", nil), primitives.Observe, pipeline.End, "app")
+	assertPanicCode(t, pipeline.ErrorCodeRegistration, func() {
+		duplicateInstance.UseNamedInstance("guard-a", pipeline.Func("Guard", nil), primitives.Observe, pipeline.End, "xihan.other")
+	})
+}
+
+// assertPanicCode 核对 fn 以给定错误码的 FrameworkError panic：登记时立即报的错误（RFC-0004 规则 8）
+func assertPanicCode(t *testing.T, code string, fn func()) {
+	t.Helper()
+	defer func() {
+		t.Helper()
+		recovered := recover()
+		framework, ok := recovered.(*primitives.FrameworkError)
+		if !ok || framework.Code != code {
+			t.Errorf("expected a panic with %s, got %v", code, recovered)
+		}
+	}()
+	fn()
 }
