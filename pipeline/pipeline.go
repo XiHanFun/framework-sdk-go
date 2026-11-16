@@ -152,7 +152,7 @@ func (b *Builder) UseNamedInstance(instance string, middleware Middleware, stage
 // add 登记一个中间件：阶段必须合法；同一类型的默认实例只登记一次、命名实例的名字在类型内唯一（RFC-0004 规则 7），不合即 panic
 func (b *Builder) add(middleware Middleware, instance string, stage primitives.PipelineStage, placement Placement, owner string) *Builder {
 	if !stage.IsValid() {
-		panic(&primitives.FrameworkError{Code: ErrorCodeUnknownStage, Message: fmt.Sprintf("'%s' is not a pipeline stage.", stage)})
+		panic(&primitives.FrameworkError{Code: ErrorCodeUnknownStage, Message: fmt.Sprintf("Unknown pipeline stage '%d'.", int(stage))})
 	}
 	if owner == "" {
 		owner = AppOwner
@@ -163,9 +163,9 @@ func (b *Builder) add(middleware Middleware, instance string, stage primitives.P
 			continue
 		}
 		if instance == "" {
-			panic(registrationError(fmt.Sprintf("the middleware '%s' is already registered; each middleware type may appear only once in a pipeline unless its instances are named", descriptor.Middleware)))
+			panic(registrationError(fmt.Sprintf("Middleware '%s' is already registered; each middleware type may appear only once in a pipeline unless its instances are named.", descriptor.Middleware)))
 		}
-		panic(registrationError(fmt.Sprintf("the middleware '%s' named '%s' is already registered; instance names must be unique within a type", descriptor.Middleware, instance)))
+		panic(registrationError(fmt.Sprintf("Middleware '%s' named '%s' is already registered; instance names must be unique within a type.", descriptor.Middleware, instance)))
 	}
 	b.registrations = append(b.registrations, &registration{middleware: middleware, descriptor: descriptor, order: len(b.registrations)})
 	return b
@@ -190,7 +190,7 @@ func (b *Builder) constrain(middleware, other string, before bool) *Builder {
 		panic(err)
 	}
 	if subject == nil {
-		panic(registrationError(fmt.Sprintf("the middleware '%s' is not registered, so no ordering constraint can be declared for it", middleware)))
+		panic(registrationError(fmt.Sprintf("Middleware '%s' is not registered, so no ordering constraint can be declared for it.", middleware)))
 	}
 	b.constraints = append(b.constraints, constraint{subject: subject, target: other, before: before})
 	return b
@@ -204,7 +204,7 @@ func (b *Builder) find(name string) (*registration, error) {
 			continue
 		}
 		if found != nil {
-			return nil, registrationError(fmt.Sprintf("the middleware name '%s' matches several registrations, so ordering constraints by name are ambiguous for it", name))
+			return nil, registrationError(fmt.Sprintf("The middleware name '%s' matches several registrations, so ordering constraints by name are ambiguous for it.", name))
 		}
 		found = registration
 	}
@@ -240,7 +240,7 @@ func (b *Builder) Dump() (string, error) {
 // Build 构建管道：terminal 是 handle 阶段之后的终点（通常是操作分派）。
 func (b *Builder) Build(terminal Step) (Step, error) {
 	if terminal == nil {
-		return nil, registrationError("the pipeline needs a terminal step")
+		return nil, registrationError("The pipeline needs a terminal step.")
 	}
 	sorted, err := b.sorted()
 	if err != nil {
@@ -257,29 +257,10 @@ func (b *Builder) Build(terminal Step) (Step, error) {
 	return next, nil
 }
 
-// sorted 按规则排序：先阶段；阶段内先 Placement，再归属，再登记顺序，最后按约束做稳定拓扑排序。
+// sorted 按规则排序（RFC-0004「排序规则」，与 .NET 的 PipelineBuilder 一致）：按阶段顺序逐阶段处理，阶段内先 Placement，再归属，
+// 再登记顺序排出基准次序，然后解析这个阶段里各中间件的约束目标（按基准次序，每个中间件先 Before 后 After，各按声明顺序），
+// 最后按约束做稳定拓扑排序。所以前一阶段成环先于后一阶段的约束目标未登记报出
 func (b *Builder) sorted() ([]*registration, error) {
-	// 约束目标在排序时按名字解析：未登记、有歧义、跨阶段都是登记错误
-	resolved := make([][2]*registration, 0, len(b.constraints))
-	for _, constraint := range b.constraints {
-		target, err := b.find(constraint.target)
-		if err != nil {
-			return nil, err
-		}
-		subject := constraint.subject.descriptor
-		if target == nil {
-			return nil, registrationError(fmt.Sprintf("the ordering constraint of the middleware '%s' references the unregistered middleware '%s'", subject.Display(), constraint.target))
-		}
-		if target.descriptor.Stage != subject.Stage {
-			return nil, registrationError(fmt.Sprintf("the middleware '%s' (stage '%s') and '%s' (stage '%s') are not in the same stage, so no relative order can be declared between them", subject.Display(), subject.Stage, constraint.target, target.descriptor.Stage))
-		}
-		if constraint.before {
-			resolved = append(resolved, [2]*registration{constraint.subject, target})
-		} else {
-			resolved = append(resolved, [2]*registration{target, constraint.subject})
-		}
-	}
-
 	var result []*registration
 	for _, stage := range primitives.PipelineStages() {
 		var members []*registration
@@ -298,7 +279,11 @@ func (b *Builder) sorted() ([]*registration, error) {
 			}
 			return members[i].order < members[j].order
 		})
-		ordered, err := topologicalSort(members, resolved)
+		edges, err := b.edges(members, stage)
+		if err != nil {
+			return nil, err
+		}
+		ordered, err := topologicalSort(members, edges, stage)
 		if err != nil {
 			return nil, err
 		}
@@ -307,21 +292,46 @@ func (b *Builder) sorted() ([]*registration, error) {
 	return result, nil
 }
 
-// topologicalSort 在基础顺序上应用约束做稳定拓扑排序（Kahn，每次取基础顺序最靠前的无前驱节点）。
-func topologicalSort(members []*registration, constraints [][2]*registration) ([]*registration, error) {
-	index := map[*registration]int{}
-	for position, member := range members {
-		index[member] = position
+// edges 解析一个阶段里的约束：目标按名字解析，未登记、有歧义或不在同一阶段都是登记错误（KERNEL_PIPELINE_003）；
+// 返回的每条边 [先, 后]
+func (b *Builder) edges(members []*registration, stage primitives.PipelineStage) ([][2]*registration, error) {
+	var edges [][2]*registration
+	for _, member := range members {
+		for _, before := range []bool{true, false} {
+			for _, constraint := range b.constraints {
+				if constraint.subject != member || constraint.before != before {
+					continue
+				}
+				target, err := b.find(constraint.target)
+				if err != nil {
+					return nil, err
+				}
+				subject := member.descriptor.Display()
+				if target == nil {
+					return nil, registrationError(fmt.Sprintf("The ordering constraint of middleware '%s' references unregistered middleware '%s'.", subject, constraint.target))
+				}
+				if target.descriptor.Stage != stage {
+					return nil, registrationError(fmt.Sprintf("Middleware '%s' (stage '%s') and '%s' (stage '%s') are not in the same stage, so no relative order can be declared between them.", subject, stage.ManifestName(), constraint.target, target.descriptor.Stage.ManifestName()))
+				}
+				if before {
+					edges = append(edges, [2]*registration{member, target})
+				} else {
+					edges = append(edges, [2]*registration{target, member})
+				}
+			}
+		}
 	}
+	return edges, nil
+}
+
+// topologicalSort 在基础顺序上应用约束做稳定拓扑排序（Kahn，每次取基础顺序最靠前的无前驱节点）；成环时 KERNEL_PIPELINE_001，
+// 按基础顺序列出全部仍被卡住的中间件，按名字登记的实例写成 类型名[名字]（RFC-0004 规则 8，ADR-0236）
+func topologicalSort(members []*registration, edges [][2]*registration, stage primitives.PipelineStage) ([]*registration, error) {
 	incoming := map[*registration]int{}
 	outgoing := map[*registration][]*registration{}
-	for _, constraint := range constraints {
-		first, second := constraint[0], constraint[1]
-		if _, ok := index[first]; !ok {
-			continue
-		}
-		outgoing[first] = append(outgoing[first], second)
-		incoming[second]++
+	for _, edge := range edges {
+		outgoing[edge[0]] = append(outgoing[edge[0]], edge[1])
+		incoming[edge[1]]++
 	}
 	var ordered []*registration
 	remaining := append([]*registration(nil), members...)
@@ -334,7 +344,11 @@ func topologicalSort(members []*registration, constraints [][2]*registration) ([
 			}
 		}
 		if picked < 0 {
-			return nil, &primitives.FrameworkError{Code: ErrorCodeCycle, Message: fmt.Sprintf("the ordering constraints in stage '%s' form a cycle", remaining[0].descriptor.Stage)}
+			stuck := make([]string, 0, len(remaining))
+			for _, registration := range remaining {
+				stuck = append(stuck, "'"+registration.descriptor.Display()+"'")
+			}
+			return nil, &primitives.FrameworkError{Code: ErrorCodeCycle, Message: fmt.Sprintf("Middleware ordering constraints in stage '%s' form a cycle: %s.", stage.ManifestName(), strings.Join(stuck, ", "))}
 		}
 		node := remaining[picked]
 		remaining = append(remaining[:picked], remaining[picked+1:]...)
@@ -346,16 +360,16 @@ func topologicalSort(members []*registration, constraints [][2]*registration) ([
 	return ordered, nil
 }
 
-// registrationError 创建登记错误。
+// registrationError 创建登记错误（KERNEL_PIPELINE_003）；消息是 .NET 的英文原文，逐字相同（ADR-0236）
 func registrationError(message string) error {
-	return &primitives.FrameworkError{Code: ErrorCodeRegistration, Message: message + "."}
+	return &primitives.FrameworkError{Code: ErrorCodeRegistration, Message: message}
 }
 
 // ParseStage 解析清单里的阶段名；未知阶段返回 KERNEL_PIPELINE_002。
 func ParseStage(name string) (primitives.PipelineStage, error) {
 	stage, ok := primitives.ParsePipelineStage(name)
 	if !ok {
-		return 0, &primitives.FrameworkError{Code: ErrorCodeUnknownStage, Message: fmt.Sprintf("'%s' is not a pipeline stage.", name)}
+		return 0, &primitives.FrameworkError{Code: ErrorCodeUnknownStage, Message: fmt.Sprintf("Unknown pipeline stage '%s'.", name)}
 	}
 	return stage, nil
 }

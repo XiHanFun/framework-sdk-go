@@ -232,3 +232,79 @@ func assertPanicCode(t *testing.T, code string, fn func()) {
 	}()
 	fn()
 }
+
+// panicMessage 返回 fn panic 的 FrameworkError 的消息
+func panicMessage(t *testing.T, fn func()) (message string) {
+	t.Helper()
+	defer func() {
+		framework, ok := recover().(*primitives.FrameworkError)
+		if !ok {
+			t.Fatal("expected a FrameworkError panic")
+		}
+		message = framework.Message
+	}()
+	fn()
+	return ""
+}
+
+// sortMessage 返回排序时报的 FrameworkError 的消息
+func sortMessage(t *testing.T, builder *pipeline.Builder) string {
+	t.Helper()
+	_, err := builder.Describe()
+	var framework *primitives.FrameworkError
+	if !errors.As(err, &framework) {
+		t.Fatalf("expected a FrameworkError, got %v", err)
+	}
+	return framework.Message
+}
+
+// TestErrorMessagesAreTheReferenceText 核对配置错误的消息与 .NET 的英文原文逐字相同（RFC-0004 规则 8，ADR-0236）：按名字登记的实例
+// 写成 类型名[名字]，成环时按基准次序列出全部仍被卡住的中间件
+func TestErrorMessagesAreTheReferenceText(t *testing.T) {
+	named := func(name string, stage primitives.PipelineStage) func(*pipeline.Builder) *pipeline.Builder {
+		return func(builder *pipeline.Builder) *pipeline.Builder {
+			return builder.UseNamedInstance(name, pipeline.Func("Guard", nil), stage, pipeline.End, "app")
+		}
+	}
+	build := func(steps ...func(*pipeline.Builder) *pipeline.Builder) *pipeline.Builder {
+		builder := pipeline.NewBuilder()
+		for _, step := range steps {
+			builder = step(builder)
+		}
+		return builder
+	}
+	cases := []struct{ got, want string }{
+		{sortMessage(t, build(named("a", primitives.Validate), named("b", primitives.Validate), named("c", primitives.Validate)).Before("a", "b").Before("b", "a")),
+			"Middleware ordering constraints in stage 'validate' form a cycle: 'Guard[a]', 'Guard[b]'."},
+		{sortMessage(t, build(named("a", primitives.Validate), named("b", primitives.Validate)).Before("a", "zz")),
+			"The ordering constraint of middleware 'Guard[a]' references unregistered middleware 'zz'."},
+		{sortMessage(t, build(named("a", primitives.Validate), named("b", primitives.Handle)).Before("a", "b")),
+			"Middleware 'Guard[a]' (stage 'validate') and 'b' (stage 'handle') are not in the same stage, so no relative order can be declared between them."},
+		{sortMessage(t, build(named("a", primitives.Validate), named("b", primitives.Validate)).Before("a", "Guard")),
+			"The middleware name 'Guard' matches several registrations, so ordering constraints by name are ambiguous for it."},
+		{panicMessage(t, func() { build(named("a", primitives.Validate), named("a", primitives.Validate)) }),
+			"Middleware 'Guard' named 'a' is already registered; instance names must be unique within a type."},
+		{panicMessage(t, func() {
+			pipeline.NewBuilder().Use(pipeline.Func("Audit", nil)).Use(pipeline.Func("Audit", nil))
+		}), "Middleware 'Audit' is already registered; each middleware type may appear only once in a pipeline unless its instances are named."},
+		{panicMessage(t, func() { pipeline.NewBuilder().Before("q", "a") }),
+			"Middleware 'q' is not registered, so no ordering constraint can be declared for it."},
+		{panicMessage(t, func() {
+			pipeline.NewBuilder().UseAt(pipeline.Func("Audit", nil), primitives.PipelineStage(42), pipeline.End, "app")
+		}),
+			"Unknown pipeline stage '42'."},
+	}
+	for _, c := range cases {
+		if c.got != c.want {
+			t.Errorf("message %q\nwant    %q", c.got, c.want)
+		}
+	}
+	if _, err := pipeline.ParseStage("bogus"); err == nil || err.(*primitives.FrameworkError).Message != "Unknown pipeline stage 'bogus'." {
+		t.Errorf("ParseStage %v", err)
+	}
+	// 前一阶段成环先于后一阶段的约束目标未登记：阶段逐个处理
+	mixed := build(named("a", primitives.Observe), named("b", primitives.Observe), named("c", primitives.Handle)).Before("a", "b").Before("b", "a").Before("c", "zz")
+	if got := sortMessage(t, mixed); !strings.HasPrefix(got, "Middleware ordering constraints in stage 'observe' form a cycle") {
+		t.Errorf("an earlier stage is checked first: %s", got)
+	}
+}
