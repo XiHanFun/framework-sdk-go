@@ -6,14 +6,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/xihanfun/framework-sdk-go/internal/jsonstrict"
+	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
 	"github.com/xihanfun/framework-sdk-go/primitives"
 )
 
@@ -249,21 +248,17 @@ type Manifest struct {
 	Entry       string                  `json:"entry,omitempty"`
 }
 
-// Read 按 Schema 解析并校验清单 JSON（PRIMITIVES_VALIDATION_001）：成员名区分大小写，未知成员、缺必填成员、任何位置的 null、
-// JSON 之后的多余内容、同一层的重复成员名、空的 activation、格式与跨字段约束都算失败；接口版本必须是数字字符串，只有 requires[].version 可以带 ^
+// Read 按 Schema 解析并校验清单 JSON（PRIMITIVES_VALIDATION_001）：先过共同的 JSON 读取检查（RFC-0001「JSON 文本」，ADR-0236：
+// 语法按 RFC 8259、开头的 BOM 与嵌套超过 64 层不合法、字符串是合法的 Unicode、任何一层的重复成员名不合法）；成员名区分大小写，
+// 未知成员、缺必填成员、任何位置的 null、空的 activation、格式与跨字段约束都算失败；接口版本必须是数字字符串，只有 requires[].version 可以带 ^
 func Read(data []byte) (*Manifest, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	var raw json.RawMessage
-	if err := decoder.Decode(&raw); err != nil {
-		return nil, &primitives.FrameworkError{Code: primitives.ErrorCodeInvalidArgument, Message: "The manifest is not valid JSON.", Cause: err}
+	if problem := jsontext.Check(data); problem != nil {
+		if problem.Syntax {
+			return nil, &primitives.FrameworkError{Code: primitives.ErrorCodeInvalidArgument, Message: "The manifest is not valid JSON."}
+		}
+		return nil, invalid("the manifest has the member '%s' more than once", problem.Path)
 	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return nil, invalid("the manifest has content after the JSON object")
-	}
-	if name, found, _ := jsonstrict.DuplicateMember(raw); found {
-		return nil, invalid("the manifest has the member '%s' more than once in the same object", name)
-	}
+	raw := json.RawMessage(bytes.TrimSpace(data))
 	if err := checkShape(raw, reflect.TypeFor[Manifest](), "$"); err != nil {
 		return nil, err
 	}

@@ -3,6 +3,8 @@ package primitives
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
 )
 
 // Unit 是没有值的成功结果的类型参数。
@@ -139,36 +141,31 @@ func (r Result[T]) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON 从线上编码还原（RFC-0001）：ok 必须是布尔值；成功不能带 error，有值的成功必须带 value（只有 Maybe 可以是 null），
 // 没有值的成功不能带 value；失败必须带 error 对象、不能带 value；成员名区分大小写，未知成员忽略
 func (r *Result[T]) UnmarshalJSON(data []byte) error {
-	members, err := wireObject(data, "a result")
+	root, err := wireObject(data, "a result")
 	if err != nil {
 		return err
 	}
-	okRaw, has := members["ok"]
+	okValue, has := root.Find("ok")
 	if !has {
 		return wireError("a result on the wire needs the member 'ok'", nil)
 	}
-	var ok bool
-	switch string(okRaw) {
-	case "true":
-		ok = true
-	case "false":
-	default:
+	if okValue.Kind != jsontext.Bool {
 		return wireError("the member 'ok' of a result must be a boolean", nil)
 	}
-	valueRaw, hasValue := members["value"]
-	errorRaw, hasError := members["error"]
-	if !ok {
+	value, hasValue := root.Find("value")
+	failure, hasError := root.Find("error")
+	if !okValue.Bool {
 		if hasValue {
 			return wireError("a failed result on the wire must not carry a value", nil)
 		}
 		if !hasError {
 			return wireError("a failed result on the wire needs an error", nil)
 		}
-		var failure Error
-		if err := json.Unmarshal(errorRaw, &failure); err != nil {
+		decoded, err := decodeError(data, failure)
+		if err != nil {
 			return err
 		}
-		*r = Fail[T](&failure)
+		*r = Fail[T](decoded)
 		return nil
 	}
 	if hasError {
@@ -184,13 +181,13 @@ func (r *Result[T]) UnmarshalJSON(data []byte) error {
 	if !hasValue {
 		return wireError("a successful result on the wire needs the member 'value'", nil)
 	}
-	if string(valueRaw) == "null" && !isMaybe[T]() {
+	if value.Kind == jsontext.Null && !isMaybe[T]() {
 		return wireError("the value of a successful result must not be null unless it is a Maybe", nil)
 	}
-	var value T
-	if err := json.Unmarshal(valueRaw, &value); err != nil {
+	var decoded T
+	if err := json.Unmarshal(raw(data, value), &decoded); err != nil {
 		return wireError("the value of a successful result could not be decoded", err)
 	}
-	*r = Ok(value)
+	*r = Ok(decoded)
 	return nil
 }

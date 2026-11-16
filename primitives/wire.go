@@ -1,34 +1,38 @@
 package primitives
 
 import (
-	"encoding/json"
-	"fmt"
 	"strings"
 
-	"github.com/xihanfun/framework-sdk-go/internal/jsonstrict"
+	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
 )
 
-// wireObject 把线上的 JSON 对象读成成员表：成员名区分大小写；不是对象（含 null）即失败；同一层出现重复的成员名不合法，
-// 不取第一个也不取最后一个（ADR-0235），对象里嵌套的值（value、details、inner）一并核对
-func wireObject(data []byte, what string) (map[string]json.RawMessage, error) {
-	if name, found, _ := jsonstrict.DuplicateMember(data); found {
-		return nil, wireError(fmt.Sprintf("%s on the wire has the member '%s' more than once in the same object", what, name), nil)
+// wireObject 读线上的 JSON 对象：先过共同的 JSON 读取检查（RFC-0001「JSON 文本」，ADR-0236）——语法按 RFC 8259、嵌套不超过 64 层、
+// 字符串是合法的 Unicode、任何一层（含 value、details 与 inner 的内部）都没有重复的成员名，不取第一个也不取最后一个；
+// 再要求根是对象（null 也不是）。成员按文本顺序读出，名字区分大小写
+func wireObject(data []byte, what string) (*jsontext.Value, error) {
+	root, problem := jsontext.Parse(data)
+	if problem != nil {
+		if problem.Syntax {
+			return nil, wireError(what+" on the wire is not JSON", nil)
+		}
+		return nil, wireError(what+" on the wire has the member '"+problem.Path+"' more than once", nil)
 	}
-	var members map[string]json.RawMessage
-	if err := json.Unmarshal(data, &members); err != nil || members == nil {
-		return nil, wireError(what+" on the wire must be a JSON object", err)
+	if root.Kind != jsontext.Object {
+		return nil, wireError(what+" on the wire must be a JSON object", nil)
 	}
-	return members, nil
+	return root, nil
 }
 
-// wireString 读线上的 JSON 字符串；不是字符串（含 null）时第二个返回值为假
-func wireString(raw json.RawMessage) (string, bool) {
-	var text string
-	if len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &text) != nil {
+// wireString 读线上的 JSON 字符串；成员没有或不是字符串（含 null）时第二个返回值为假
+func wireString(value *jsontext.Value, has bool) (string, bool) {
+	if !has || value.Kind != jsontext.String {
 		return "", false
 	}
-	return text, true
+	return value.Text, true
 }
+
+// raw 返回值在原文里的文本
+func raw(data []byte, value *jsontext.Value) []byte { return data[value.Start:value.End] }
 
 // wireError 创建线上编码不合法的配置错误（PRIMITIVES_VALIDATION_001）
 func wireError(message string, cause error) error {

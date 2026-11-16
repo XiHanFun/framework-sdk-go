@@ -3,6 +3,7 @@ package primitives_test
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/xihanfun/framework-sdk-go/primitives"
@@ -119,5 +120,37 @@ func TestDuplicateMembersAreRejected(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(`{"code":"KERNEL_UNEXPECTED_001","message":"x","details":{"a":1,"a":2}}`), &failure); err == nil {
 		t.Error("a duplicate member in the details must be rejected")
+	}
+}
+
+// TestWireReadingRunsTheCommonJSONCheck 核对 Result 与 Error 先过共同的 JSON 读取检查（RFC-0001「JSON 文本」，ADR-0236）：
+// BOM、嵌套超过 64 层、孤立的代理项与非法 UTF-8 都不是 JSON，任何一层的重复成员都不合法
+func TestWireReadingRunsTheCommonJSONCheck(t *testing.T) {
+	deep := strings.Repeat("[", 64) + strings.Repeat("]", 64)
+	for _, data := range []string{
+		"\xef\xbb\xbf" + `{"ok":true}`,
+		`{"ok":true,"value":` + deep + `}`,
+		`{"ok":true,"value":"\ud800"}`,
+		`{"ok":true,"value":"` + "\xff" + `"}`,
+		`{"ok":true,"value":[{"a":1},{"b":1,"b":2}]}`,
+		`{"ok":true,"value":1,}`,
+	} {
+		var result primitives.Result[any]
+		if err := result.UnmarshalJSON([]byte(data)); err == nil {
+			t.Errorf("%q must be rejected", data)
+		}
+	}
+	if err := decodeInto[any]([]byte(`{"ok":true,"value":` + strings.Repeat("[", 63) + strings.Repeat("]", 63) + `}`)); err != nil {
+		t.Errorf("64 levels are allowed: %v", err)
+	}
+	for _, data := range []string{
+		`{"code":"KERNEL_UNEXPECTED_001","message":"x","details":{"a":"\udc00"}}`,
+		`{"code":"KERNEL_UNEXPECTED_001","message":"x","inner":{"code":"KERNEL_UNEXPECTED_001","message":"y","details":{"n":1,"n":2}}}`,
+		`{"code":"KERNEL_UNEXPECTED_001","message":"x","details":{"a":{"b":1,"b":2}}}`,
+	} {
+		var failure primitives.Error
+		if err := failure.UnmarshalJSON([]byte(data)); err == nil {
+			t.Errorf("%q must be rejected", data)
+		}
 	}
 }

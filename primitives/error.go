@@ -3,6 +3,8 @@ package primitives
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
 )
 
 // Error 是可恢复失败的描述（RFC-0001 Error）：错误码面向程序，消息键与参数面向人；不可变，方法返回新值。
@@ -152,45 +154,57 @@ func (e *Error) MarshalJSON() ([]byte, error) {
 	return json.Marshal(errorJSON{Code: e.Code, Message: e.Message(), MessageKey: e.MessageKey, Details: e.Details, Inner: e.Inner})
 }
 
-// UnmarshalJSON 从线上编码还原（RFC-0001）：code 必填且合法；message 必填、是非空字符串；messageKey 有就必须合法；details 必须是 JSON 对象，
-// inner 必须是错误对象（null 与数组都拒绝）；成员名区分大小写，未知成员忽略
+// UnmarshalJSON 从线上编码还原（RFC-0001）：先过共同的 JSON 读取检查；code 必填且合法；message 必填、是非空字符串；messageKey 有就必须合法；
+// details 必须是 JSON 对象，inner 必须是错误对象（null 与数组都拒绝）；成员名区分大小写，未知成员忽略
 func (e *Error) UnmarshalJSON(data []byte) error {
-	members, err := wireObject(data, "an error")
+	root, err := wireObject(data, "an error")
 	if err != nil {
 		return err
 	}
-	codeRaw, has := members["code"]
-	if !has {
-		return wireError("an error on the wire needs the member 'code'", nil)
+	decoded, err := decodeError(data, root)
+	if err != nil {
+		return err
 	}
-	code, ok := wireString(codeRaw)
-	if !ok || !IsErrorCode(code) {
-		return &FrameworkError{Code: ErrorCodeInvalidArgument, Message: fmt.Sprintf("The error code %s must match <DOMAIN>_<KIND>_<NNN>.", codeRaw)}
-	}
-	decoded := Error{Code: code}
-	if decoded.Text, ok = wireString(members["message"]); !ok || decoded.Text == "" {
-		return wireError("an error on the wire needs the member 'message' as a non-empty string", nil)
-	}
-	if raw, has := members["messageKey"]; has {
-		if decoded.MessageKey, ok = wireString(raw); !ok || !IsMessageKey(decoded.MessageKey) {
-			return &FrameworkError{Code: ErrorCodeInvalidArgument, Message: fmt.Sprintf("The message key %s of an error on the wire must match <domain>.<segment>[.<segment>].", raw)}
-		}
-	}
-	if raw, has := members["details"]; has {
-		if len(raw) == 0 || raw[0] != '{' {
-			return wireError("the member 'details' of an error must be a JSON object", nil)
-		}
-		if err := json.Unmarshal(raw, &decoded.Details); err != nil {
-			return wireError("the member 'details' of an error could not be decoded", err)
-		}
-	}
-	if raw, has := members["inner"]; has {
-		var inner Error
-		if err := json.Unmarshal(raw, &inner); err != nil {
-			return err
-		}
-		decoded.Inner = &inner
-	}
-	*e = decoded
+	*e = *decoded
 	return nil
+}
+
+// decodeError 从已过共同检查的文本里读一个错误对象，inner 递归
+func decodeError(data []byte, root *jsontext.Value) (*Error, error) {
+	if root.Kind != jsontext.Object {
+		return nil, wireError("an error on the wire must be a JSON object", nil)
+	}
+	codeValue, has := root.Find("code")
+	if !has {
+		return nil, wireError("an error on the wire needs the member 'code'", nil)
+	}
+	code, ok := wireString(codeValue, true)
+	if !ok || !IsErrorCode(code) {
+		return nil, &FrameworkError{Code: ErrorCodeInvalidArgument, Message: fmt.Sprintf("The error code %s must match <DOMAIN>_<KIND>_<NNN>.", raw(data, codeValue))}
+	}
+	decoded := &Error{Code: code}
+	if decoded.Text, ok = wireString(root.Find("message")); !ok || decoded.Text == "" {
+		return nil, wireError("an error on the wire needs the member 'message' as a non-empty string", nil)
+	}
+	if key, has := root.Find("messageKey"); has {
+		if decoded.MessageKey, ok = wireString(key, true); !ok || !IsMessageKey(decoded.MessageKey) {
+			return nil, &FrameworkError{Code: ErrorCodeInvalidArgument, Message: fmt.Sprintf("The message key %s of an error on the wire must match <domain>.<segment>[.<segment>].", raw(data, key))}
+		}
+	}
+	if details, has := root.Find("details"); has {
+		if details.Kind != jsontext.Object {
+			return nil, wireError("the member 'details' of an error must be a JSON object", nil)
+		}
+		if err := json.Unmarshal(raw(data, details), &decoded.Details); err != nil {
+			return nil, wireError("the member 'details' of an error could not be decoded", err)
+		}
+	}
+	if inner, has := root.Find("inner"); has {
+		nested, err := decodeError(data, inner)
+		if err != nil {
+			return nil, err
+		}
+		decoded.Inner = nested
+	}
+	return decoded, nil
 }

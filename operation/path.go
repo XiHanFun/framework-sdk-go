@@ -6,13 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
-	"strconv"
 	"strings"
-)
 
-// bracketedNameCharacters 是成员名里要写成 ['名字'] 的字符（RFC-0011 规则 2，照 System.Text.Json 的实测）：
-// . 空格 ' / " [ ] ( ) \ 制表 换行 回车 换页 退格 U+0085 U+2028 U+2029；其余字符照写，名字原样、不转义
-const bracketedNameCharacters = ". '/\"[]()\\\t\n\r\f\b\u0085  "
+	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
+)
 
 // payloadPath 把载荷的解码错误换成出错位置的 JSON 路径（RFC-0011 规则 2，ADR-0124、ADR-0235）：只写位置、不带目标类型名。
 // 类型不匹配按错误的偏移在载荷里定位，写成 $.quantity、$.lines[1].quantity、$['unit price'] 这样的路径；根上就不合时写 $。
@@ -103,16 +100,10 @@ func pathOf(stack []*pathFrame) string {
 	return path
 }
 
-// memberPath 在路径后接一个成员：含 bracketedNameCharacters 里的字符时写 ['名字']，否则写 .名字（空名字写成 .）
-func memberPath(path, name string) string {
-	if strings.ContainsAny(name, bracketedNameCharacters) {
-		return path + "['" + name + "']"
-	}
-	return path + "." + name
-}
+// memberPath 与 indexPath 照 RFC-0011 规则 2 写路径，写法与共同检查报重复成员时相同
+func memberPath(path, name string) string { return jsontext.MemberPath(path, name) }
 
-// indexPath 在路径后接一个数组下标
-func indexPath(path string, index int) string { return path + "[" + strconv.Itoa(index) + "]" }
+func indexPath(path string, index int) string { return jsontext.IndexPath(path, index) }
 
 // findNull 按请求类型走一遍载荷，找第一个落在整数、浮点或布尔上的 null：encoding/json 把这样的 null 当成零值、不报错，
 // 而 .NET 的值类型不接受 null。字符串、结构体、切片、映射、指针与接口接受 null（与 .NET 的引用类型一样）；

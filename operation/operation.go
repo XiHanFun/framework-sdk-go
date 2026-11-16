@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
 	"github.com/xihanfun/framework-sdk-go/invocation"
 	"github.com/xihanfun/framework-sdk-go/pipeline"
 	"github.com/xihanfun/framework-sdk-go/primitives"
@@ -233,13 +234,18 @@ func (r *Registry) List() []*Descriptor {
 	return descriptors
 }
 
-// decode 解码请求载荷：空等价于 {}；非 JSON、null 或类型不匹配为 KERNEL_VALIDATION_001，reason 只写出错位置的 JSON 路径
+// decode 解码请求载荷：空载荷等价于 {}；先过共同的 JSON 读取检查（RFC-0001「JSON 文本」，ADR-0236），语法错误（含只有空白、BOM、
+// 嵌套超过 64 层、孤立的代理项）的 reason 是 $，任何一层的重复成员写第一处重复的路径；null、类型不匹配为 KERNEL_VALIDATION_001，
+// reason 只写出错位置的 JSON 路径
 func decode[Req any](id string, payload []byte) (Req, *primitives.Error) {
 	var request Req
-	trimmed := bytes.TrimSpace(payload)
-	if len(trimmed) == 0 {
-		trimmed = []byte("{}")
+	if len(payload) == 0 {
+		payload = []byte("{}")
 	}
+	if problem := jsontext.Check(payload); problem != nil {
+		return request, InvalidPayload(id, problem.Path)
+	}
+	trimmed := bytes.TrimSpace(payload)
 	// JSON null 不是请求对象：载荷不合法，reason 写 $（ADR-0235，旧版写 the payload is null）
 	if bytes.Equal(trimmed, []byte("null")) {
 		return request, InvalidPayload(id, "$")
