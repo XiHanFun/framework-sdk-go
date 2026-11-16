@@ -143,7 +143,9 @@ Go 自己的文本（日期、`Duration`、结构体）不跨语言：插件的�
 - Resilience 阶段 `DeadlineMiddleware`：进入时截止时间已到即 `KERNEL_TIMEOUT_001` + `kernel.invocation.deadline_before_start`，后面的中间件与处理器不执行；进入时不核对取消；途中的超时与取消按截止令牌归因。
 - Validate 阶段 `ValidationMiddleware`：原始调用（`Invoker.Invoke`）在这里把载荷解码成请求，失败即 `KERNEL_VALIDATION_001`；类型化调用（`operation.Invoke`）跳过。
 
-进入管道前只核对未登记（`KERNEL_NOTFOUND_001`）与类型化调用的类型不符（`KERNEL_VALIDATION_002`），按这个顺序。`Invoker.Invoke` 在管道结束之后才用 `encoding/json` 把响应编码成载荷，中间件用 `operation.ResponseOf(ctx)` 看到的是编码之前的响应对象；写不出时（浮点成员是 `NaN` 或无穷、通道或函数这样序列化不支持的值、`MarshalJSON` 失败或 panic）以 `KERNEL_UNEXPECTED_001` + `kernel.invocation.unhandled_exception` 结束、没有载荷、不 panic，原因是 `FrameworkError` 时放进 `inner`；`NaN` 不写成 `null` 或字符串。类型化入口 `operation.Invoke` 不编码。`Invoker.Pipeline()` 返回实际执行的管道（含内置步骤）。
+进入管道前只核对未登记（`KERNEL_NOTFOUND_001`）与类型化调用的类型不符（`KERNEL_VALIDATION_002`），按这个顺序。`Invoker.Invoke` 在管道结束之后才用 `encoding/json` 把响应编码成载荷，中间件用 `operation.ResponseOf(ctx)` 看到的是编码之前的响应对象；写不出时（浮点成员是 `NaN` 或无穷、通道或函数这样序列化不支持的值、`MarshalJSON` 失败或 panic）以 `KERNEL_UNEXPECTED_001` + `kernel.invocation.unhandled_exception` 结束、没有载荷、不 panic，原因是 `FrameworkError` 时放进 `inner`；`NaN` 不写成 `null` 或字符串。类型化入口 `operation.Invoke` 不编码。
+
+取消与截止时间只经 `ctx.Done()` 与 `ctx.Err()` 通知（RFC-0003 规则 1，ADR-0236）：调用器、内置步骤与插件运行时都在调用方的 goroutine 里同步执行处理器，不中止它、不另起 goroutine 放弃它；令牌触发之后处理器照常返回结果的，调用以那个结果结束，只有处理器把取消写成结果（`KERNEL_CANCELLED_001`）时才按截止令牌归因。处理器要尽早结束，自己检查 `ctx.Done()`。`Invoker.Pipeline()` 返回实际执行的管道（含内置步骤）。
 
 ## 破坏性改动与迁移
 
