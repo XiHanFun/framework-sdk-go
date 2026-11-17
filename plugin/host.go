@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"slices"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -56,7 +57,7 @@ func (h *Host) Endpoint() Endpoint { return h.endpoint }
 // 本地核对不合（plugins.callback.denied、plugins.callback.tenant_denied）或没有回调端点时不发请求；gRPC 失败按映射表
 // （rules.MapCallbackStatus，向量 callback-status.json）；宿主写来的 Status 按 FromStatus 读。
 func (h *Host) Invoke(ctx *invocation.Context, id string, payload []byte) operation.Response {
-	if failure := h.check(ctx, rules.CallbackInvoke); failure != nil {
+	if failure := h.check(ctx, rules.CallbackInvoke, id); failure != nil {
 		return operation.Response{Outcome: primitives.Fail[primitives.Unit](failure)}
 	}
 	callCtx, cancel := h.outgoing(ctx)
@@ -65,7 +66,7 @@ func (h *Host) Invoke(ctx *invocation.Context, id string, payload []byte) operat
 	if err != nil {
 		return operation.Response{Outcome: primitives.Fail[primitives.Unit](h.failure(ctx, rules.CallbackInvoke, err, id))}
 	}
-	outcome := FromStatus(response.Status, h.pluginID, id)
+	outcome := FromStatus(response.Status, h.pluginID, rules.CallbackPhase(rules.CallbackInvoke, id))
 	if !outcome.OK() {
 		return operation.Response{Outcome: outcome}
 	}
@@ -86,7 +87,7 @@ func (h *Host) Publish(ctx *invocation.Context, envelopes ...Envelope) []primiti
 	if len(envelopes) == 0 {
 		return results
 	}
-	if failure := h.check(ctx, rules.CallbackPublish); failure != nil {
+	if failure := h.check(ctx, rules.CallbackPublish, ""); failure != nil {
 		return every(failure)
 	}
 	request := &pluginv1.PublishRequest{Metadata: ToMetadata(ctx)}
@@ -99,11 +100,12 @@ func (h *Host) Publish(ctx *invocation.Context, envelopes ...Envelope) []primiti
 	if err != nil {
 		return every(h.failure(ctx, rules.CallbackPublish, err, ""))
 	}
+	phase := rules.CallbackPhase(rules.CallbackPublish, "")
 	if len(response.Results) != len(envelopes) {
-		return every(processFailed(h.pluginID, phasePublish, reasonResultCount(len(response.Results), len(envelopes))))
+		return every(processFailed(h.pluginID, phase, reasonResultCount(len(response.Results), len(envelopes))))
 	}
 	for index, result := range response.Results {
-		results[index] = FromStatus(result, h.pluginID, phasePublish)
+		results[index] = FromStatus(result, h.pluginID, phase)
 	}
 	return results
 }
@@ -116,10 +118,10 @@ func (h *Host) Close() error {
 	return h.conn.Close()
 }
 
-// check 在发出之前核对（invocation.md §5）。没有可用的回调端点时每次回调都是 plugins.host.unavailable（handshake.md §4 的
-// 「每次回调」），先于其他判定；然后按宿主的顺序：权限（既在清单 permissions 里、也在 granted_permissions 里），
-// 租户（回调上下文的 xihan.tenant 必须是某个在途调用或投递的租户），与宿主给出同样的错误。
-func (h *Host) check(ctx *invocation.Context, rpc string) *primitives.Error {
+// check 在发出之前依次核对，不合即不发请求（invocation.md §5）：① 有没有可用的回调端点（handshake.md §4）；② 权限（既在清单
+// permissions 里、也在 granted_permissions 里）；③ 租户（回调上下文的 xihan.tenant 必须是某个在途调用或投递的租户），②③ 与宿主给出
+// 同样的错误；④ 回调上下文的截止时间已过或已被取消，结果与映射表相应的一行相同。operationID 是 Host.Invoke 的操作 ID。
+func (h *Host) check(ctx *invocation.Context, rpc, operationID string) *primitives.Error {
 	if h.client == nil {
 		return hostUnavailable(h.pluginID, reasonNoCallbackEndpoint)
 	}
@@ -129,6 +131,13 @@ func (h *Host) check(ctx *invocation.Context, rpc string) *primitives.Error {
 	}
 	if tenant := ctx.Tenant(); tenant != "" && !h.inFlight(tenant) {
 		return tenantDenied(h.pluginID, tenant)
+	}
+	// 截止时间先于取消判定：截止时间到了时上下文也随之结束，按截止令牌归因（RFC-0004），与宿主一侧的 DeadlineMiddleware 一致
+	if deadline, ok := ctx.Deadline(); ctx.DeadlineExceeded() || (ok && !time.Now().Before(deadline)) {
+		return h.mapStatus(rpc, codes.DeadlineExceeded, "the deadline of the callback context has passed", true, operationID)
+	}
+	if ctx.Err() != nil {
+		return h.mapStatus(rpc, codes.Canceled, "the callback context is cancelled", true, operationID)
 	}
 	return nil
 }
@@ -146,14 +155,20 @@ func (h *Host) outgoing(ctx *invocation.Context) (context.Context, context.Cance
 	return metadata.AppendToOutgoingContext(base, SessionMetadataKey, h.session), cancel
 }
 
-// failure 按 invocation.md §5 的表映射回调的 gRPC 失败；不是 gRPC 状态的错误按连接失败（Unavailable）处理。
+// failure 按 invocation.md §5 的表映射回调的 gRPC 失败；不是 gRPC 状态的错误按连接失败（Unavailable）处理。grpc-go 在本端
+// 按截止时间中止调用时报的就是 DeadlineExceeded，不用再归一；只按表映射，不另按时钟或令牌改写（超时的归因交给插件自己的管道，RFC-0003 规则 1）。
 // Cancelled 看回调所在的调用上下文：取消信号已触发是取消，没有触发是连接被宿主或网络切断
 func (h *Host) failure(ctx *invocation.Context, rpc string, err error, operationID string) *primitives.Error {
 	code, message := codes.Unavailable, err.Error()
 	if grpcStatus, ok := status.FromError(err); ok {
 		code, message = grpcStatus.Code(), grpcStatus.Message()
 	}
-	mapped := rules.MapCallbackStatus(rpc, uint32(code), message, ctx.Err() != nil, h.pluginID, operationID)
+	return h.mapStatus(rpc, code, message, ctx.Err() != nil, operationID)
+}
+
+// mapStatus 按映射表（rules.MapCallbackStatus，向量 callback-status.json）把一个 gRPC 状态换成错误。
+func (h *Host) mapStatus(rpc string, code codes.Code, message string, contextCancelled bool, operationID string) *primitives.Error {
+	mapped := rules.MapCallbackStatus(rpc, uint32(code), message, contextCancelled, h.pluginID, operationID)
 	var details map[string]any
 	if mapped.Details != nil {
 		details = make(map[string]any, len(mapped.Details))

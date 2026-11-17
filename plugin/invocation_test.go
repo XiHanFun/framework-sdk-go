@@ -190,7 +190,11 @@ func TestHostErrorsAreReadByTheRules(t *testing.T) {
 	if empty := FromProtoError(&pluginv1.Error{Code: "ORDERS_UNEXPECTED_001"}, probeID); empty.MessageKey != "" || empty.Message() != "ORDERS_UNEXPECTED_001" {
 		t.Errorf("a free-text error without text takes the code, got %+v", empty)
 	}
-	for _, details := range []string{`{"a":1,"a":2}`, `[1]`, `"x"`, `{"a":`, "null"} {
+	// 空对象、只有空白、有读成双精度会溢出的数也当作没有细节；错误码不合法时原来的 inner 丢掉
+	if dropped := FromProtoError(&pluginv1.Error{Code: "bad", Inner: &pluginv1.Error{Code: "ORDERS_UNEXPECTED_001", Text: "inner"}}, probeID); dropped.Inner != nil {
+		t.Errorf("an invalid code drops the inner error, got %+v", dropped.Inner)
+	}
+	for _, details := range []string{`{"a":1,"a":2}`, `[1]`, `"x"`, `{"a":`, "null", "{}", " ", `{"a":1e309}`, `{"a":[-1e309]}`} {
 		if decoded := FromProtoError(&pluginv1.Error{Code: "ORDERS_UNEXPECTED_001", MessageKey: "orders.failed", Details: details}, probeID); decoded.Details != nil {
 			t.Errorf("details %s must be dropped, got %#v", details, decoded.Details)
 		}

@@ -290,6 +290,11 @@ func TestHealthFollowsTheHook(t *testing.T) {
 	if health := h.health(ctx); health.State != stateOf(primitives.Degraded) || health.Error.GetCode() != "PROBE_UNAVAILABLE_001" || len(health.Items) != 0 {
 		t.Errorf("degraded %v", health)
 	}
+	// 从 Ready 起回调 panic：这一次的结果是 Degraded，状态也迁到 Degraded（应答报的就是迁移之后的状态，lifecycle.md §7.4）
+	reported.Store(func() Health { return Health{State: primitives.Ready} })
+	if health := h.health(ctx); health.State != stateOf(primitives.Ready) {
+		t.Errorf("ready again %v", health)
+	}
 	reported.Store(func() Health { panic("boom") })
 	health := h.health(ctx)
 	if health.State != stateOf(primitives.Degraded) || len(health.Items) != 0 {

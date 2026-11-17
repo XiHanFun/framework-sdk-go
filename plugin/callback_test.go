@@ -259,7 +259,8 @@ func TestCallbackMetadataComesFromTheCall(t *testing.T) {
 	h, pending, results := runCallbacks(t, env, nil)
 	h.ready(deadline(t), nil)
 	inbound := &pluginv1.InvocationMetadata{
-		TraceParent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+		// 标志 03：上下文只留采样位，回调按 RFC-0003 写出 01，不原样转发收到的那一个
+		TraceParent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-03",
 		TraceState:  "vendor=1",
 		// 早于测试调用的 gRPC 截止时间（10 秒），生效的就是它
 		Deadline: rules.FormatDeadline(time.Now().Add(5 * time.Second)),
@@ -273,7 +274,7 @@ func TestCallbackMetadataComesFromTheCall(t *testing.T) {
 	host.mu.Lock()
 	defer host.mu.Unlock()
 	sent := host.invokes[len(host.invokes)-1].Metadata
-	if sent.TraceParent != traceParent || sent.TraceState != "" || len(sent.Baggage) != 1 || sent.Baggage[primitives.BaggageCorrelation] != "c1" {
+	if sent.TraceParent != traceParent || sent.TraceParent != "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" || sent.TraceState != "" || len(sent.Baggage) != 1 || sent.Baggage[primitives.BaggageCorrelation] != "c1" {
 		t.Errorf("metadata %+v", sent)
 	}
 	if !sevenDecimals.MatchString(sent.Deadline) || sent.Deadline != inbound.Deadline {
@@ -336,14 +337,44 @@ func TestCallbackStatusFollowsTheVectors(t *testing.T) {
 		}
 	}
 	host.answer(nil, nil)
+}
 
-	// 调用方取消的回调：gRPC 在本地以 Cancelled 结束，回调上下文的取消信号已触发
-	cancelled := call(t, h, pending, results, nil, func(ctx *invocation.Context, host *Host) any {
-		derived, cancel := context.WithCancel(ctx)
-		cancel()
-		return hostInvoke(invocation.New(derived), host)
-	})
-	expectError(t, "a cancelled callback", cancelled.(*primitives.Error), "KERNEL_CANCELLED_001", "kernel.invocation.cancelled", nil)
+// TestExpiredOrCancelledCallbacksAreNotSent 核对 invocation.md §5 发出前核对的第 ④ 步：回调上下文的截止时间已过按 DeadlineExceeded、
+// 已被取消按「Cancelled，取消信号已触发」，都不发请求；Host.Publish 每一项都是这个错误。第 ① 到 ③ 步在它之前。
+func TestExpiredOrCancelledCallbacksAreNotSent(t *testing.T) {
+	host, address := startFakeHost(t)
+	env := defaultEnv()
+	env[EnvHostAddress] = address
+	h, pending, results := runCallbacks(t, env, nil)
+	h.ready(deadline(t), []string{"capability:kernel.pipeline"})
+	expired := func(do func(ctx *invocation.Context, host *Host) any) func(ctx *invocation.Context, host *Host) any {
+		return func(ctx *invocation.Context, host *Host) any {
+			return do(invocation.New(ctx, invocation.WithDeadline(time.Now().Add(-time.Second)), invocation.WithBaggage(ctx.Baggage())), host)
+		}
+	}
+	cancelled := func(do func(ctx *invocation.Context, host *Host) any) func(ctx *invocation.Context, host *Host) any {
+		return func(ctx *invocation.Context, host *Host) any {
+			derived, cancel := context.WithCancel(ctx)
+			cancel()
+			return do(invocation.New(derived, invocation.WithBaggage(ctx.Baggage())), host)
+		}
+	}
+	before := host.calls()
+	expectError(t, "an expired Host.Invoke", call(t, h, pending, results, nil, expired(hostInvoke)).(*primitives.Error), "KERNEL_TIMEOUT_001", "kernel.invocation.deadline_exceeded", nil)
+	expectError(t, "a cancelled Host.Invoke", call(t, h, pending, results, nil, cancelled(hostInvoke)).(*primitives.Error), "KERNEL_CANCELLED_001", "kernel.invocation.cancelled", nil)
+	if host.calls() != before {
+		t.Error("an expired or cancelled callback must not reach the host")
+	}
+	// 权限先于截止时间：没有授予 capability:messaging.queue 的发布即使已经过期也报 plugins.callback.denied
+	expectEvery(t, "an expired Host.Publish without the permission", call(t, h, pending, results, nil, expired(hostPublish)), 2, ErrorCodeCallbackDenied, MessageCallbackDenied, map[string]any{"id": probeID, "permission": "capability:messaging.queue"})
+
+	other, otherPending, otherResults := runCallbacks(t, env, nil)
+	other.ready(deadline(t), nil)
+	expectEvery(t, "an expired Host.Publish", call(t, other, otherPending, otherResults, nil, expired(hostPublish)), 2, "KERNEL_TIMEOUT_001", "kernel.invocation.deadline_exceeded", nil)
+	expectEvery(t, "a cancelled Host.Publish", call(t, other, otherPending, otherResults, nil, cancelled(hostPublish)), 2, "KERNEL_CANCELLED_001", "kernel.invocation.cancelled", nil)
+	if host.calls() != before {
+		t.Error("an expired or cancelled callback must not reach the host")
+	}
 }
 
 // TestCallbackConnectionFailureIsUnavailable 核对连接失败按 Unavailable 映射成 plugins.host.unavailable（invocation.md §5）。

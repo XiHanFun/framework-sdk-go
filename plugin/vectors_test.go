@@ -2,8 +2,10 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"io/fs"
 	"maps"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/xihanfun/framework-spec/conformance"
+	"github.com/xihanfun/framework-spec/conformance/rules"
 
 	"github.com/xihanfun/framework-sdk-go/invocation"
 	pluginv1 "github.com/xihanfun/framework-sdk-go/plugin/v1"
@@ -239,30 +242,23 @@ func TestRuntimeMessagesFollowTheVectors(t *testing.T) {
 		t.Errorf("the embedded catalog has %d files (%v), want %d", len(entries), err, len(Locales))
 	}
 
-	fixed := map[string]string{
-		reasonConfigurationNotObject:     "the configuration is not a JSON object",
-		reasonInvalidErrorCode("{code}"): "invalid error code '{code}'",
-		reasonHostFailureWithoutError:    "the host reported a failure without an error",
-		reasonResultCount(1, 2):          "the host returned 1 results for 2 envelopes",
-		reasonNoCallbackEndpoint:         "no supported callback endpoint",
-		reasonPanic:                      "panic",
-	}
-	for got, want := range fixed {
-		if got != want {
-			t.Errorf("reason %q, want %q", got, want)
-		}
-	}
+	// 读入错误的两条 reason 由 FromProtoError 与 FromStatus（rules.ReadProtoError、ReadProtoStatus）写出
+	invalidCode := FromProtoError(&pluginv1.Error{Code: "x"}, probeID).Details["reason"]
+	withoutError := FromStatus(&pluginv1.Status{}, probeID, "publish").Err().Details["reason"]
+	known := []any{reasonConfigurationNotObject, invalidCode, withoutError, reasonResultCount(1, 2), reasonNoCallbackEndpoint}
 	for _, reason := range vectors.Reasons {
 		switch reason.Reason {
 		case "the plugin reported a failure without an error", "{status}: {message}", "{type}":
 			// 宿主读插件的那一条不在 SDK 里；后两条由 rules.StatusReason 与 errorTypeName 写出，见别的测试
 		default:
 			text := strings.NewReplacer("{code}", "x", "{results}", "1", "{envelopes}", "2").Replace(reason.Reason)
-			known := []string{reasonConfigurationNotObject, reasonInvalidErrorCode("x"), reasonHostFailureWithoutError, reasonResultCount(1, 2), reasonNoCallbackEndpoint}
-			if !slices.Contains(known, text) {
+			if !slices.Contains(known, any(text)) {
 				t.Errorf("the vector's reason %q has no counterpart in the SDK", reason.Reason)
 			}
 		}
+	}
+	if reasonPanic != "panic" {
+		t.Errorf("reason %q", reasonPanic)
 	}
 	// RuntimeCatalog 是副本：改它不影响运行时自己的目录
 	copied := RuntimeCatalog()
@@ -270,4 +266,86 @@ func TestRuntimeMessagesFollowTheVectors(t *testing.T) {
 	if copied.Name != RuntimeCatalogName || runtimeCatalog.Locales["en-US"][MessageUnavailable] == "changed" {
 		t.Error("RuntimeCatalog must return a copy")
 	}
+}
+
+// TestErrorReadingFollowsTheVectors 回放 error-reading.json（invocation.md §3）：cases 经 FromProtoError 读，statusWithoutError 里插件读宿主的
+// 用例经 FromStatus 读（ok 为假却没有 error 与整个 status 缺失两种写法）；宿主读插件的用例不在 SDK 里。
+func TestErrorReadingFollowsTheVectors(t *testing.T) {
+	vectors, err := conformance.ErrorReading()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range vectors.Cases {
+		compareRead(t, c.Name, FromProtoError(protoErrorOf(c.Error), vectors.PluginID), &c.Expected)
+	}
+	read := 0
+	for _, c := range vectors.StatusWithoutError {
+		if c.Reader != "plugin" {
+			continue
+		}
+		read++
+		operation := ""
+		if c.Operation != nil {
+			operation = *c.Operation
+		}
+		// Host.Invoke 的 phase 是操作 ID，Host.Publish 是 publish：与 Host 里取 phase 的写法相同
+		phase := rules.CallbackPhase(c.RPC, operation)
+		compareRead(t, "status without an error "+phase, FromStatus(&pluginv1.Status{Ok: false}, vectors.PluginID, phase).Err(), &c.Expected)
+		compareRead(t, "missing status "+phase, FromStatus(nil, vectors.PluginID, phase).Err(), &c.Expected)
+	}
+	if read == 0 {
+		t.Error("the vectors must have cases of the plugin reading the host")
+	}
+}
+
+// protoErrorOf 把向量里的线上 Error 换成协议的 Error。
+func protoErrorOf(wire conformance.ProtoError) *pluginv1.Error {
+	converted := &pluginv1.Error{Code: wire.Code, MessageKey: wire.MessageKey, Text: wire.Text, Details: wire.Details}
+	if wire.Inner != nil {
+		converted.Inner = protoErrorOf(*wire.Inner)
+	}
+	return converted
+}
+
+// compareRead 按 JSON 值比较读入的错误与期望：键为 null 即没有键（自由文本错误），文案为 null 即带键的错误没有文案，细节的数字按 JSON 数值比较。
+func compareRead(t *testing.T, name string, got *primitives.Error, want *conformance.DecodedErrorExpectation) {
+	t.Helper()
+	if want == nil || got == nil {
+		if (want == nil) != (got == nil) {
+			t.Errorf("%s: got %+v, want %+v", name, got, want)
+		}
+		return
+	}
+	key, text := "", ""
+	if want.Key != nil {
+		key = *want.Key
+	}
+	if want.Text != nil {
+		text = *want.Text
+	}
+	gotText := got.Text
+	if got.MessageKey == "" {
+		gotText = got.Message()
+	}
+	if got.Code != want.Code || got.MessageKey != key || gotText != text {
+		t.Errorf("%s: got %s %q %q, want %s %q %q", name, got.Code, got.MessageKey, gotText, want.Code, key, text)
+	}
+	var expected any
+	if err := json.Unmarshal(want.Details, &expected); err != nil {
+		t.Fatal(err)
+	}
+	var actual any
+	if got.Details != nil {
+		encoded, err := json.Marshal(got.Details)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(encoded, &actual); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !reflect.DeepEqual(actual, expected) {
+		t.Errorf("%s: details %v, want %s", name, actual, want.Details)
+	}
+	compareRead(t, name+" inner", got.Inner, want.Inner)
 }

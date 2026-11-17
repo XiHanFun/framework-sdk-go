@@ -7,7 +7,6 @@ import (
 	"github.com/xihanfun/framework-spec/conformance/rules"
 
 	"github.com/xihanfun/framework-sdk-go/internal/jsoncodec"
-	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
 	"github.com/xihanfun/framework-sdk-go/invocation"
 	pluginv1 "github.com/xihanfun/framework-sdk-go/plugin/v1"
 	"github.com/xihanfun/framework-sdk-go/primitives"
@@ -35,36 +34,41 @@ func ToProtoError(err *primitives.Error) *pluginv1.Error {
 	return encoded
 }
 
-// FromProtoError 按 invocation.md §3「读入」还原宿主写来的 Error；pluginID 是插件的清单 ID：
-//   - code 不合错误码文法时整个错误换成 PLUGINS_UNEXPECTED_001 + plugins.process.failed（phase 为 invoke，reason 为 invalid error code '<code>'）；
-//   - message_key 合消息键文法的按键还原（不带 text），否则是自由文本错误，文案取 text，text 为空时取 code；
-//   - details 为空、通不过共同的 JSON 读取检查（RFC-0001）或不是对象时当作没有细节，否则按值模型读（64 位范围内整数写法的数字是 int64，
-//     其余是 float64，数组与对象是 []any 与 map[string]any，ADR-0236）；inner 按同样的规则递归。
+// FromProtoError 按 invocation.md §3「读入」还原宿主写来的 Error（规则就是一致性模块的 rules.ReadProtoError，向量 error-reading.json）；
+// pluginID 是插件的清单 ID：
+//   - code 不合错误码文法时整个错误换成 PLUGINS_UNEXPECTED_001 + plugins.process.failed（phase 一律为 invoke，reason 为
+//     invalid error code '<code>'），原来的 inner 丢掉；
+//   - message_key 合消息键文法的按键还原、不取 text，否则是自由文本错误，文案取 text，text 为空时取 code；
+//   - details 为空、只有空白、是空对象、通不过共同的 JSON 读取检查（RFC-0001）、不是对象，或任何一层有读成双精度会溢出的数时当作没有细节，
+//     否则按值模型读（64 位范围内整数写法的数字是 int64，其余是 float64，下溢读成 0，数组与对象是 []any 与 map[string]any）；
+//     inner 按同样的规则递归。
 func FromProtoError(err *pluginv1.Error, pluginID string) *primitives.Error {
 	if err == nil {
 		return nil
 	}
-	if !primitives.IsErrorCode(err.Code) {
-		return processFailed(pluginID, phaseInvoke, reasonInvalidErrorCode(err.Code))
-	}
-	var details map[string]any
-	if err.Details != "" {
-		if root, problem := jsontext.Parse([]byte(err.Details)); problem == nil && root.Kind == jsontext.Object {
-			details = jsoncodec.FromJSON(root).(map[string]any)
-		}
-	}
-	var inner *primitives.Error
+	return fromDecoded(rules.ReadProtoError(toRulesError(err), pluginID))
+}
+
+// toRulesError 把协议的 Error 换成规则函数的输入。
+func toRulesError(err *pluginv1.Error) rules.ProtoError {
+	converted := rules.ProtoError{Code: err.Code, MessageKey: err.MessageKey, Text: err.Text, Details: err.Details}
 	if err.Inner != nil {
-		inner = FromProtoError(err.Inner, pluginID)
+		inner := toRulesError(err.Inner)
+		converted.Inner = &inner
 	}
-	if primitives.IsMessageKey(err.MessageKey) {
-		return &primitives.Error{Code: err.Code, MessageKey: err.MessageKey, Details: details, Inner: inner}
+	return converted
+}
+
+// fromDecoded 把规则函数读出的错误换成原语层错误：带键的按键，否则是 Literal（ReadProtoError 保证自由文本错误的文案非空）。
+func fromDecoded(decoded rules.DecodedError) *primitives.Error {
+	var inner *primitives.Error
+	if decoded.Inner != nil {
+		inner = fromDecoded(*decoded.Inner)
 	}
-	text := err.Text
-	if text == "" {
-		text = err.Code
+	if decoded.Key != "" {
+		return &primitives.Error{Code: decoded.Code, MessageKey: decoded.Key, Details: decoded.Details, Inner: inner}
 	}
-	return primitives.Literal(err.Code, text, details, inner)
+	return primitives.Literal(decoded.Code, decoded.Text, decoded.Details, inner)
 }
 
 // ToStatus 把结果编码为协议的 Status。
@@ -75,16 +79,20 @@ func ToStatus(result primitives.Result[primitives.Unit]) *pluginv1.Status {
 	return &pluginv1.Status{Ok: false, Error: ToProtoError(result.Err())}
 }
 
-// FromStatus 还原宿主写来的 Status（invocation.md §3）：错误按 FromProtoError 读；ok 为假却没有 error 时为 PLUGINS_UNEXPECTED_001 +
-// plugins.process.failed，phase 是 phase（回调的操作 ID 或 publish），reason 为 the host reported a failure without an error。
+// FromStatus 还原宿主写来的 Status（invocation.md §3，规则就是 rules.ReadProtoStatus，插件读宿主）：错误按 FromProtoError 读；
+// ok 为假却没有 error、或整个 status 缺失时为 PLUGINS_UNEXPECTED_001 + plugins.process.failed，phase 是 phase（回调的操作 ID 或 publish，
+// 见 rules.CallbackPhase），reason 为 the host reported a failure without an error。
 func FromStatus(status *pluginv1.Status, pluginID, phase string) primitives.Result[primitives.Unit] {
-	if status != nil && status.Ok {
+	var failure *rules.ProtoError
+	if status.GetError() != nil {
+		converted := toRulesError(status.GetError())
+		failure = &converted
+	}
+	decoded := rules.ReadProtoStatus(status.GetOk(), failure, rules.ReaderPlugin, phase, pluginID)
+	if decoded == nil {
 		return primitives.Success()
 	}
-	if status == nil || status.Error == nil {
-		return primitives.Fail[primitives.Unit](processFailed(pluginID, phase, reasonHostFailureWithoutError))
-	}
-	return primitives.Fail[primitives.Unit](FromProtoError(status.Error, pluginID))
+	return primitives.Fail[primitives.Unit](fromDecoded(*decoded))
 }
 
 // FromMetadata 从协议的上下文元数据还原调用上下文（invocation.md §2「接收方还原上下文」）；parent 承载 gRPC 的取消与截止时间：

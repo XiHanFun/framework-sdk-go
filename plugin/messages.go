@@ -55,26 +55,17 @@ const (
 	phaseStop = "stop"
 	// phaseHealth 是健康回调。
 	phaseHealth = "health"
-	// phaseInvoke 是读入的错误码不合文法时的阶段（invocation.md §3）。
-	phaseInvoke = "invoke"
-	// phasePublish 是 Host.Publish。
-	phasePublish = "publish"
 )
 
-// 写进 reason 的固定英文文本（plugin-messages.json 的 reasons，不本地化）。
+// 写进 reason 的固定英文文本（plugin-messages.json 的 reasons，不本地化）；读入错误的那几条由 rules.ReadProtoError 等写出。
 const (
 	// reasonConfigurationNotObject 是配置节不是 JSON 对象（lifecycle.md §7.2）。
 	reasonConfigurationNotObject = "the configuration is not a JSON object"
 	// reasonNoCallbackEndpoint 是 XIHAN_PLUGIN_HOST_ADDRESS 缺失、不合法或没有能连的项（handshake.md §4）。
 	reasonNoCallbackEndpoint = "no supported callback endpoint"
-	// reasonHostFailureWithoutError 是宿主写来的 Status.ok 为假却没有 error（invocation.md §3）。
-	reasonHostFailureWithoutError = "the host reported a failure without an error"
 	// reasonPanic 是回调以 panic 结束（lifecycle.md §7.6）。
 	reasonPanic = "panic"
 )
-
-// reasonInvalidErrorCode 是对方写来的错误码不合文法时的 reason（invocation.md §3）。
-func reasonInvalidErrorCode(code string) string { return "invalid error code '" + code + "'" }
 
 // reasonResultCount 是 Host.Publish 的结果数与信封数不同时的 reason（invocation.md §5）。
 func reasonResultCount(results, envelopes int) string {
