@@ -1,0 +1,9 @@
+{
+  "plugins.callback.denied": "Das Plugin '{id}' darf die Berechtigung '{permission}' nicht verwenden: Sie muss im Manifest deklariert und vom Host erteilt sein.",
+  "plugins.callback.session_invalid": "Das Sitzungstoken des Plugins fehlt oder ist ungültig.",
+  "plugins.callback.tenant_denied": "Das Plugin '{id}' darf nicht im Mandanten '{tenant}' handeln: Ein Rückruf kann nur den Mandanten eines Aufrufs tragen, den der Host an das Plugin übergeben hat.",
+  "plugins.event.unsubscribed": "Plugin '{id}' hat kein Abonnement für das Thema '{topic}', den Typ '{type}' und den Modus '{mode}'.",
+  "plugins.host.unavailable": "Plugin '{id}' kann den Host nicht erreichen: {reason}",
+  "plugins.process.failed": "Plugin '{id}' ist während {phase} fehlgeschlagen: {reason}",
+  "plugins.process.unavailable": "Plugin '{id}' ist nicht verfügbar (Zustand: {state})."
+}

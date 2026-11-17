@@ -10,6 +10,8 @@ github.com/xihanfun/framework-spec/conformance v0.0.0-20261116094734-7f42ed94ad3
 github.com/xihanfun/framework-spec/conformance v0.0.0-20261116094734-7f42ed94ad3d/go.mod h1:6RM9e3ziIR2vYSvIDUx7WoxI3ktV0JFsZtYZWhA2zQY=
 github.com/xihanfun/framework-spec/conformance v0.0.0-20261116113650-9db77a64ab06 h1:vYIy14+5zb0N7baSwWuG3bpg3SvGWPlWCH50bc/x8Vs=
 github.com/xihanfun/framework-spec/conformance v0.0.0-20261116113650-9db77a64ab06/go.mod h1:6RM9e3ziIR2vYSvIDUx7WoxI3ktV0JFsZtYZWhA2zQY=
+github.com/xihanfun/framework-spec/conformance v0.0.0-20261117201552-634155aec50e h1:tWyurMgsk9DqPAL3QfFdtDK90mmw0UyN3uMAn4nv75U=
+github.com/xihanfun/framework-spec/conformance v0.0.0-20261117201552-634155aec50e/go.mod h1:6RM9e3ziIR2vYSvIDUx7WoxI3ktV0JFsZtYZWhA2zQY=
 golang.org/x/net v0.57.0 h1:K5+3DljvIuDG9/Jv9rvyMywYNFCQ9RSUY6OOTTkT+tE=
 golang.org/x/net v0.57.0/go.mod h1:KpXc8iv+r3XplLAG/f7Jsf9RPszJzdR0f58q9vGOuEU=
 golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=

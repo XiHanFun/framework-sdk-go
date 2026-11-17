@@ -149,7 +149,8 @@ func (s *state) create(ctx *invocation.Context, request CreateRequest) primitive
 	return primitives.Ok(CreateResponse{Text: request.Text, Greeting: greeting, Tenant: ctx.Tenant(), Principal: ctx.Principal(), Correlation: ctx.Correlation()})
 }
 
-// relay 经宿主回调调用另一个操作并原样返回应答；没有宿主回调端点时失败。
+// relay 经宿主回调调用另一个操作并原样返回应答。插件的调用里总有宿主客户端（没有可用的回调端点时回调以 plugins.host.unavailable 失败）；
+// 不经 Serve 直接调用时没有，以插件自己的错误失败。
 func (s *state) relay(ctx *invocation.Context, request RelayRequest) primitives.Result[json.RawMessage] {
 	host, ok := plugin.HostOf(ctx)
 	if !ok {

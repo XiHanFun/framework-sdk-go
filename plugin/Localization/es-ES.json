@@ -1,0 +1,9 @@
+{
+  "plugins.callback.denied": "El plugin '{id}' no puede usar el permiso '{permission}': debe declararse en el manifiesto y concederlo el host.",
+  "plugins.callback.session_invalid": "El token de sesión del plugin falta o no es válido.",
+  "plugins.callback.tenant_denied": "El plugin '{id}' no puede actuar en el inquilino '{tenant}': una devolución de llamada solo puede llevar el inquilino de una llamada que el host haya entregado al plugin.",
+  "plugins.event.unsubscribed": "El plugin '{id}' no tiene ninguna suscripción para el tema '{topic}', el tipo '{type}' y el modo '{mode}'.",
+  "plugins.host.unavailable": "El plugin '{id}' no puede conectar con el host: {reason}",
+  "plugins.process.failed": "El plugin '{id}' falló durante {phase}: {reason}",
+  "plugins.process.unavailable": "El plugin '{id}' no está disponible (estado: {state})."
+}

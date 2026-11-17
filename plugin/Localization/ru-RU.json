@@ -1,0 +1,9 @@
+{
+  "plugins.callback.denied": "Плагин '{id}' не может использовать разрешение '{permission}': оно должно быть объявлено в манифесте и предоставлено хостом.",
+  "plugins.callback.session_invalid": "Токен сеанса плагина отсутствует или недопустим.",
+  "plugins.callback.tenant_denied": "Плагин '{id}' не может действовать в арендаторе '{tenant}': обратный вызов может нести только арендатора вызова, переданного хостом плагину.",
+  "plugins.event.unsubscribed": "У плагина '{id}' нет подписки на тему '{topic}' с типом '{type}' и режимом '{mode}'.",
+  "plugins.host.unavailable": "Плагин '{id}' не может связаться с хостом: {reason}",
+  "plugins.process.failed": "Плагин '{id}' завершился ошибкой на этапе {phase}: {reason}",
+  "plugins.process.unavailable": "Плагин '{id}' недоступен (состояние: {state})."
+}

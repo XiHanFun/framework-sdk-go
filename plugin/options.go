@@ -1,6 +1,6 @@
 // Package plugin 是进程外插件的运行时（RFC-0017，spec/plugin/）：读取宿主下发的环境变量、以 gRPC 服务端提供
-// xihan.plugin.v1 的 Plugin 服务、向 stdout 写握手行、维护生命周期状态机与健康推送、把调用分派给登记的操作，
-// 并以 Host 客户端回调宿主；stdin 关闭即退出。
+// xihan.plugin.v1 的 Plugin 服务、向 stdout 写握手行、按 lifecycle.md §7 维护调用次序、生命周期状态机与健康推送、
+// 把调用分派给登记的操作，并以 Host 客户端回调宿主；Stop、stdin 关闭与 SIGTERM 都按规范的时限收尾退出。
 package plugin
 
 import (
@@ -35,21 +35,33 @@ const (
 	EnvLocale           = "XIHAN_PLUGIN_LOCALE"
 )
 
-// 插件协议的错误码（conventions/error-codes.md）。
+// 插件协议的错误码（conventions/error-codes.md、invocation.md §8）。
 const (
-	// ErrorCodeUnavailable：插件未就绪、正在停止或不可达。
+	// ErrorCodeUnavailable：插件不在可服务状态，或回调连不上宿主、没有可用的回调端点。
 	ErrorCodeUnavailable = "PLUGINS_UNAVAILABLE_001"
-	// ErrorCodeCallbackDenied：回调的会话令牌无效或权限未授予。
+	// ErrorCodeCallbackDenied：回调的会话令牌无效、所需权限未声明或未授予，或带了不属于在途调用的租户。
 	ErrorCodeCallbackDenied = "PLUGINS_DENIED_002"
-	// ErrorCodeUnexpected：配置、启动、停止或调用时的未预期失败。
+	// ErrorCodeUnexpected：生命周期或健康回调失败、配置节不是 JSON 对象、对方写来的错误不合法、回调没有对应的 gRPC 状态。
 	ErrorCodeUnexpected = "PLUGINS_UNEXPECTED_001"
 )
 
-// 插件协议的消息键。
+// SDK 运行时与宿主共用的消息键（invocation.md §8，conformance/vectors/plugin/plugin-messages.json）：错误的 details 就是模板的参数，
+// 不另加成员；参数 id 一律是插件的清单 ID。目录随 SDK（RuntimeCatalog），由宿主提供，不随握手发送。
 const (
-	MessageUnavailable    = "plugins.process.unavailable"
+	// MessageUnavailable 是插件不在可服务状态（Ready、Degraded）时到达的调用与投递，参数 {id, state}，state 是状态名。
+	MessageUnavailable = "plugins.process.unavailable"
+	// MessageUnexpected 是插件一侧的失败，参数 {id, phase, reason}；phase 小写（configure、start、stop、health、invoke、publish 或回调的操作 ID）。
+	MessageUnexpected = "plugins.process.failed"
+	// MessageUnsubscribed 是投递找不到订阅（错误码 KERNEL_NOTFOUND_001），参数 {id, topic, type, mode}，空方式写 competing。
+	MessageUnsubscribed = "plugins.event.unsubscribed"
+	// MessageHostUnavailable 是回调连不上宿主或没有可用的回调端点，参数 {id, reason}。
+	MessageHostUnavailable = "plugins.host.unavailable"
+	// MessageCallbackDenied 是回调所需的权限未在清单声明或未被授予，参数 {id, permission}。
 	MessageCallbackDenied = "plugins.callback.denied"
-	MessageUnexpected     = "plugins.process.failed"
+	// MessageTenantDenied 是回调带了不属于在途调用或投递的租户，参数 {id, tenant}。
+	MessageTenantDenied = "plugins.callback.tenant_denied"
+	// MessageSessionInvalid 是宿主拒绝了回调的会话令牌，没有参数。
+	MessageSessionInvalid = "plugins.callback.session_invalid"
 )
 
 // Network 是端点的网络类型。
@@ -83,7 +95,7 @@ func (m SubscriptionMode) orCompeting() SubscriptionMode {
 }
 
 // Subscription 是一个事件订阅：主题，可选的只投递的 CloudEvents type，以及订阅方式。
-// 同一（Topic，MessageType）对只能声明一次，不能以两种方式各声明一次（handshake.md §3）。
+// 同一（Topic，MessageType）对只能声明一次，不能以两种方式各声明一次（handshake.md §3）；握手按声明的顺序写出，空方式写 competing。
 type Subscription struct {
 	Topic       string
 	MessageType string
@@ -106,6 +118,7 @@ type Envelope struct {
 }
 
 // EventHandler 处理一条投递的消息；返回失败由宿主的消息代理按重试与死信策略处理，处理器必须幂等。
+// 一次投递匹配多个订阅时按声明顺序依次交给各自的处理器，第一个失败即结果；处理器 panic 为 KERNEL_UNEXPECTED_001（invocation.md §4）。
 type EventHandler func(ctx *invocation.Context, envelope Envelope, attempt uint32) primitives.Result[primitives.Unit]
 
 // SubscriptionHandler 把订阅与处理器配对。
@@ -131,7 +144,8 @@ type HealthItem struct {
 	Description string
 }
 
-// Health 是插件自报的健康：状态只能是 Started、Ready、Degraded、Draining、Failed。
+// Health 是插件的健康。健康回调报的状态只有 Ready、Degraded、Failed 会改变插件的状态（lifecycle.md §7.4），其余照旧；
+// Start 之前的 Health 报本地状态（Declared、Resolved、Configured）、没有健康项。
 type Health struct {
 	State primitives.LifecycleState
 	Items []HealthItem
@@ -147,9 +161,9 @@ type Binding struct {
 
 // Configuration 是 Configure 下发的内容。
 type Configuration struct {
-	// Section 是清单 contributes.config.section 节的 JSON 对象；没有声明配置节时为 {}。
+	// Section 是清单 contributes.config.section 节的 JSON 对象原文；宿主写空时为 {}。不是 JSON 对象的配置节不会交到作者手里（lifecycle.md §7.2）。
 	Section json.RawMessage
-	// GrantedPermissions 等于清单 permissions。
+	// GrantedPermissions 是宿主授予的权限；回调前的本地核对以它为准（invocation.md §5）。
 	GrantedPermissions []string
 	// Bindings 只含清单声明的绑定。
 	Bindings []Binding
@@ -157,15 +171,19 @@ type Configuration struct {
 	WorkDirectory string
 }
 
-// Hooks 是插件作者接入生命周期的回调；都可为空。返回的错误会作为 Status.error 回给宿主（*primitives.Error 原样，其他错误转为 PLUGINS_UNEXPECTED_001）。
+// Hooks 是插件作者接入生命周期的回调；都可为空。返回 *primitives.Error 时它原样作为 Status.error 回给宿主；返回别的 error 或 panic
+// 算作回调抛出（lifecycle.md §7.6）：PLUGINS_UNEXPECTED_001 + plugins.process.failed，reason 是错误的动态类型名（去掉包名与 *，
+// 如 *fs.PathError 写 PathError），panic 写 panic，错误的文本与 panic 的值只写进 stderr 日志。
 type Hooks struct {
-	// Configure 在 Configure 时调用；失败即插件 Failed。
+	// Configure 在 Configure 时调用，配置节已核对是 JSON 对象；失败即插件 Failed。
 	Configure func(ctx context.Context, configuration Configuration) error
-	// Start 在 Start 时调用；返回后插件接受调用。
+	// Start 在 Start 时调用；成功后运行时立即求一次 Health，按结果进入 Ready、Degraded 或 Failed，然后才应答宿主（lifecycle.md §7.3）。
 	Start func(ctx context.Context) error
-	// Stop 在 Stop 时调用：完成在途工作并释放资源；grace 是宿主给的宽限。
+	// Stop 在进程里最多调一次，只在 Start 成功过时调用：Stop 时在途调用已经结束或已触发取消（lifecycle.md §7.5），reason 原样是宿主给的；
+	// stdin 关闭或收到 SIGTERM 时 reason 为 shutdown（§7.7）。grace 是宽限里剩下的时间，失败只记录，进程照常退出。
 	Stop func(ctx context.Context, reason string, grace time.Duration) error
-	// Health 给出当前健康；为空时按运行时自己的状态上报且没有健康项。
+	// Health 给出当前健康；为空时按运行时自己的状态上报且没有健康项。只在 Start 时与 Ready、Degraded 期间调用：每次 Health、
+	// WatchHealth 开始时与之后每 10 秒各一次；健康项名不在清单 contributes.health 里的丢掉。
 	Health func() Health
 }
 
@@ -185,15 +203,16 @@ type Options struct {
 	Pipeline *pipeline.Builder
 	// Subscriptions 是事件订阅与处理器。
 	Subscriptions []SubscriptionHandler
-	// Catalogs 是消息目录；至少应含 en-US。
+	// Catalogs 是插件自己的消息目录，握手时发给宿主；每份都要含 en-US。SDK 运行时的目录（RuntimeCatalog）由宿主提供，不要放进来。
 	Catalogs []Catalog
 	// Hooks 是生命周期回调。
 	Hooks Hooks
-	// Network 是监听的网络类型；空为 unix（Windows 10 1803 起也支持）。
+	// Network 是监听的网络类型；空为 unix（Windows 10 1803 起也支持），临时目录的路径含空白时改用 tcp（握手行的地址不能含空白，handshake.md §2）。
 	Network Network
-	// Address 是监听地址；空时自动生成（unix 为临时目录下新建的私有目录（0700，停止后删除）里的套接字，tcp 为 127.0.0.1 的随机端口，npipe 为随机管道名）。
+	// Address 是监听地址，不能含空白；空时自动生成（unix 为临时目录下新建的私有目录（0700，停止后删除）里的套接字，
+	// tcp 为 127.0.0.1 的随机端口，npipe 为随机管道名）。tcp 只接受 127.0.0.1:<端口>。
 	Address string
-	// Stdin 是宿主保持打开的输入；关闭即退出。空为 os.Stdin。
+	// Stdin 是宿主保持打开的输入；读到结尾即收尾退出（lifecycle.md §7.7）。空为 os.Stdin。
 	Stdin io.Reader
 	// Stdout 只用于写握手行。空为 os.Stdout。
 	Stdout io.Writer
@@ -201,6 +220,4 @@ type Options struct {
 	Stderr io.Writer
 	// Getenv 读取环境变量；空为 os.Getenv。
 	Getenv func(string) string
-	// StopGrace 是没有宿主宽限时等待在途调用的时间；零为 5 秒。
-	StopGrace time.Duration
 }

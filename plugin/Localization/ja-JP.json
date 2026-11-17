@@ -1,0 +1,9 @@
+{
+  "plugins.callback.denied": "プラグイン '{id}' は権限 '{permission}' を使用できません。権限はマニフェストで宣言され、ホストから付与されている必要があります。",
+  "plugins.callback.session_invalid": "プラグインのセッショントークンがないか無効です。",
+  "plugins.callback.tenant_denied": "プラグイン '{id}' はテナント '{tenant}' で実行できません。コールバックが持てるのは、ホストがプラグインに渡した呼び出しのテナントだけです。",
+  "plugins.event.unsubscribed": "プラグイン '{id}' には、トピック '{topic}'、タイプ '{type}'、モード '{mode}' の購読がありません。",
+  "plugins.host.unavailable": "プラグイン '{id}' はホストに接続できません: {reason}",
+  "plugins.process.failed": "プラグイン '{id}' は {phase} で失敗しました: {reason}",
+  "plugins.process.unavailable": "プラグイン '{id}' は利用できません (状態: {state})。"
+}

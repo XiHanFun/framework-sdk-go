@@ -34,7 +34,7 @@
 | `invocation` | `Context`：取消与截止时间（嵌入 `context.Context`）、W3C 追踪、已登记的 Baggage、对象袋；超时与取消翻译为 `KERNEL_TIMEOUT_001` / `KERNEL_CANCELLED_001` | RFC-0003 |
 | `pipeline` | 十一阶段的 `Builder`：`Use` / `UseAt` / `UseNamedInstance`、`Before` / `After`、`Describe` / `Dump`、`Build`；排序规则与错误码 `KERNEL_PIPELINE_00x` | RFC-0004 |
 | `operation` | `Contract`、`Schema`、`Handler[Req, Res]`、`Registry`、经完整管道执行的 `Invoker`（XGI：JSON 请求与响应） | RFC-0011 |
-| `plugin` | 进程外插件运行时 `Serve`：环境变量、监听（unix 套接字在私有目录里 / tcp / npipe）、握手行、`xihan.plugin.v1` 服务端（每次调用核对宿主的会话令牌）、生命周期状态机与健康推送、事件投递、宿主回调客户端 `Host`、宿主可解析的 JSON 日志、消息目录 | RFC-0017、`plugin/` |
+| `plugin` | 进程外插件运行时 `Serve`：启动前的清单核对、环境变量、监听（unix 套接字在私有目录里 / 127.0.0.1 的 tcp / 只允许当前用户的 npipe）、握手行、`xihan.plugin.v1` 服务端（每次调用先核对宿主的会话令牌，再按调用次序表）、生命周期状态机与健康推送、事件投递、停止与收尾的时限、宿主回调客户端 `Host`（选回调端点、发出前本地核对权限与租户）、宿主可解析的 JSON 日志、消息目录与运行时自己的目录 | RFC-0017、`plugin/` |
 | `plugin/v1` | 由 `spec/plugin/plugin.proto` 生成的协议代码（`buf generate`） | `plugin/plugin.proto` |
 | `examples/echo` | 回声插件：操作、订阅、健康、配置、宿主回调；`cmd/echo-go` 是可执行入口 | — |
 
@@ -81,9 +81,9 @@ func main() {
 
 1. 清单 `xihan.manifest.json`：`kind: plugin`、`isolation: out-of-process`、`contributes.operations` 列出全部操作、`entry` 是可执行文件名；不写 `contributes.pipeline`（只有 Wasm 插件能贡献中间件，`plugin.Serve` 读到非空即拒绝，与宿主发现插件时一致；`manifest.Read` 照 .NET 的 `ManifestReader` 不查这一条）；构建产物目录里放同一份文件，宿主读它、运行时握手时原样发送。
 2. 操作用 `operation.Add` 登记，请求与响应是普通的 JSON 结构；可恢复失败返回 `primitives.Fail`，错误码按 `<领域大写>_<KIND>_<NNN>`，文案用消息键 + `plugin.LoadCatalog` 加载的 `Localization/<区域>.json`。
-3. 订阅、生命周期回调、健康项经 `plugin.Options` 接入；`Configure` 回调里用 `configuration.Decode(&settings)` 读配置节（宿主以字符串下发数字与布尔，按字段类型转换）；操作里用 `plugin.HostOf(ctx)` 回调宿主（`Invoke` 经宿主完整管道，`Publish` 经宿主消息代理），权限由清单 `permissions` 声明、宿主授予。订阅的 `Mode` 选订阅方式（RFC-0009「订阅方式」）：空或 `plugin.SubscriptionModeCompeting` 是竞争消费，订阅了主题的宿主实例里只有一个把消息交给插件；`plugin.SubscriptionModeBroadcast` 是广播，每个在线的宿主实例都交给自己的插件实例，尽力而为、不进死信，适合清本地缓存这类每个实例都要做的事。同一（主题，类型）对只能声明一次，不能以两种方式各声明一次，`Serve` 启动时即拒绝；同一主题的不同类型可以各用一种方式，宿主投递时带上这次的方式，运行时只交给以这种方式声明的处理器。
+3. 订阅、生命周期回调、健康项经 `plugin.Options` 接入；`Configure` 回调里用 `configuration.Decode(&settings)` 读配置节（宿主以字符串下发数字与布尔，按字段类型转换，见下文[插件运行时](#插件运行时)）；操作里用 `plugin.HostOf(ctx)` 回调宿主（`Invoke` 经宿主完整管道，`Publish` 经宿主消息代理），权限由清单 `permissions` 声明、宿主授予，发出之前在本地核对。订阅的 `Mode` 选订阅方式（RFC-0009「订阅方式」）：空或 `plugin.SubscriptionModeCompeting` 是竞争消费，订阅了主题的宿主实例里只有一个把消息交给插件；`plugin.SubscriptionModeBroadcast` 是广播，每个在线的宿主实例都交给自己的插件实例，尽力而为、不进死信，适合清本地缓存这类每个实例都要做的事。同一（主题，类型）对只能声明一次，不能以两种方式各声明一次，`Serve` 启动时即拒绝；同一主题的不同类型可以各用一种方式，宿主投递时带上这次的方式，运行时只交给以这种方式声明的处理器。
 4. 日志写 stderr：`slog.New(plugin.NewLogHandler(os.Stderr, slog.LevelInfo))`，宿主按结构化日志接收；stdout 只有握手行。
-5. 宿主关闭 stdin 或调用 `Stop` 后 `Serve` 返回，进程退出。
+5. 宿主调用 `Stop`、关闭 stdin 或发 SIGTERM 后 `Serve` 返回 nil，进程以退出码 0 退出；收尾的次序与时限见[插件运行时](#插件运行时)。
 
 验证：`xihan-conformance plugin --dir <产物目录>`（规范仓库的黑盒运行器，`go install github.com/xihanfun/framework-spec/conformance/cmd/xihan-conformance@latest`）。`examples/echo` 的测试就是这样对 `echo-go` 跑全部用例。运行器自带一份协议生成代码，与本 SDK 的 `plugin/v1` 不能链接进同一个二进制，所以在测试里以独立进程运行它，而不是导入它的库。
 
@@ -160,6 +160,46 @@ type CreateOrder struct {
 
 取消与截止时间只经 `ctx.Done()` 与 `ctx.Err()` 通知（RFC-0003 规则 1，ADR-0236）：调用器、内置步骤与插件运行时都在调用方的 goroutine 里同步执行处理器，不中止它、不另起 goroutine 放弃它；令牌触发之后处理器照常返回结果的，调用以那个结果结束，只有处理器把取消写成结果（`KERNEL_CANCELLED_001`）时才按截止令牌归因。处理器要尽早结束，自己检查 `ctx.Done()`。`Invoker.Pipeline()` 返回实际执行的管道（含内置步骤）。
 
+### 插件运行时
+
+`plugin.Serve` 对宿主调用的处理照 `spec/plugin/handshake.md`、`lifecycle.md` §7 与 `invocation.md`（ADR-0237），由规范仓库的黑盒运行器 `xihan-conformance plugin` 的全部用例验证：
+
+- 启动：监听与写握手行之前核对清单与声明（`kind` 是 `plugin`、`isolation` 是 `out-of-process`、没有 `contributes.pipeline`、`primitives` 等于本 SDK 支持的原语层大版本 `primitives.SpecVersion`、操作都在 `contributes.operations` 里、订阅的主题与方式合法且（主题，类型）不重复、目录含 `en-US`），不合即不监听、不写握手行、在 stderr 记一条 `error` 并返回错误。健康项由健康回调在运行时给出，名字不在 `contributes.health` 里的那时丢掉。清单开头的 UTF-8 BOM 去掉后再读，握手发的也是去掉 BOM 的原文。
+- 握手行：地址不含空白（空白的集合同 .NET 正则的 `\s`，含 U+0085、U+00A0、U+2028 等）；`tcp` 只写 `127.0.0.1:<端口>`；缺省监听 unix 套接字，临时目录的路径含空白时改用 tcp。npipe 只允许当前用户（安全描述符 `D:P(A;;GA;;;<当前用户的 SID>)`）并拒绝远程客户端；unix 套接字放在新建的 `0700` 私有目录里。`plugin.ParseEndpoint` 的规则就是一致性模块的 `rules.ParseEndpoint`。
+- 握手应答：`primitives` 写清单的值；只声明一元操作；订阅按声明顺序，方式总写 `competing` 或 `broadcast`；`catalogs` 只有作者的目录，运行时自己的目录不发。
+- 会话令牌：元数据里必须恰好一个 `xihan-plugin-session` 值，没有或两个以上都是 `Unauthenticated`；令牌先于一切，包括次序核对与 `InvokeStream` 读第一帧。
+- 调用次序：`Handshake` 只在 `Declared`、`Configure` 只在 `Resolved`、`Start` 只在 `Configured`，各接受一次；`Stop` 在 `Declared`、`Draining`、`Stopped` 之外接受一次；其余组合以 `FailedPrecondition` 拒绝、状态不变。`Health`、`WatchHealth`、`Invoke`、`InvokeStream`、`HandleEvent` 任何状态都可以调用。
+- 配置：`configuration` 为空等同 `{}`；通不过 RFC-0001 的共同 JSON 读取检查或不是对象时不调配置回调，`PLUGINS_UNEXPECTED_001` + `plugins.process.failed`（`phase` 为 `configure`，`reason` 为 `the configuration is not a JSON object`），进入 `Failed`。`Configuration.Decode` 的成员名按 ASCII 不区分大小写匹配（Unicode 的大小写折叠不算，开尔文符号 U+212A 不等于 `k`），落在数字字段上的字符串合 JSON 数字的文法才当作数字（不带空白、正号与前导零），布尔只认 `true`、`false`（ASCII 不区分大小写），其余照目标类型的常规读法。
+- 启动与就绪：启动回调成功 → `Started` → 有健康回调就立即求一次，按结果进入 `Ready`、`Degraded` 或 `Failed`（报别的状态按 `Ready`），没有就进入 `Ready` → 然后才应答。只有 `Ready`、`Degraded` 可服务，其余状态的调用与投递为 `PLUGINS_UNAVAILABLE_001` + `plugins.process.unavailable`（`state` 是状态名）。
+- 健康：`Start` 之前报本地状态、没有健康项、不调回调；可服务期间每次 `Health` 求一次回调，只有回调报的 `Ready`、`Degraded`、`Failed` 改变状态，`Failed` 不再回来；未声明的健康项丢掉、同名只记一条 `warning`；回调 panic 时这一次是 `Degraded`，`error` 为 `plugins.process.failed`（`phase` 为 `health`）。`WatchHealth` 先推当前状态，之后状态、健康项或错误变化时推送，可服务期间每 10 秒求一次回调，进入 `Draining` 时推一次，应答 `Stop` 后结束流。
+- 生命周期回调的失败：返回 `*primitives.Error` 原样带出；返回别的 `error` 或 panic 算作抛出，为 `PLUGINS_UNEXPECTED_001` + `plugins.process.failed`，`reason` 是错误的动态类型名，去掉包名、`*` 与泛型实参（`*fs.PathError` 写 `PathError`），panic 写 `panic`；错误的文本与 panic 的值只写进 stderr 日志。
+- 停止：启动回调没有成功过的不调停止回调，直接应答 `ok`；成功过的进入 `Draining`（只从可服务的状态）、拒绝新调用、等在途调用到宽限（`grace_seconds` 为 0 按 5 秒），到时触发它们的取消信号、不再等，再调停止回调（进程里最多一次，`reason` 原样），然后应答；停止回调失败写进 `StopResponse.status`，照常退出。`Serve` 返回 nil，进程以退出码 0 退出。
+- stdin 关闭、SIGTERM 与 `Serve` 的上下文结束：可服务的进入 `Draining`，立即触发全部在途调用的取消信号并等它们；启动回调成功过、停止回调还没调过的调一次，`reason` 为 `shutdown`。从收到起最多 3 秒，到时不论是否完成都返回（进行中的 `Stop` 也受这 3 秒限制）。取消只经令牌通知，不理会取消的处理器不会被中止，只是不再等它。
+- `Invoke`：令牌 → 操作未声明为 gRPC `Unimplemented`（先于就绪）→ 不可服务为 `plugins.process.unavailable` → 还原上下文 → 调用器与完整管道；`payload` 为空等同 `{}`。
+- `InvokeStream`：在流式操作契约的 RFC 之前不提供流式操作。读第一帧，流在第一帧之前结束或第一帧不是 `start` 为 `InvalidArgument`，是 `start` 为 `Unimplemented`，不论操作是否声明、插件是否就绪。
+- `HandleEvent`：令牌 → 没有信封或方式不是空、`competing`、`broadcast` 为 `InvalidArgument` → 按（主题，方式，类型）找订阅，没有为 `KERNEL_NOTFOUND_001` + `plugins.event.unsubscribed`（空方式写 `competing`）→ 不可服务为 `plugins.process.unavailable` → 匹配的订阅按声明顺序依次执行，第一个失败即结果；处理器 panic 为 `KERNEL_UNEXPECTED_001` + `kernel.invocation.unhandled_exception`。
+- 上下文（`FromMetadata`）：`trace_parent` 不合 RFC-0003 文法即没有父 Span；`trace_state` 不进上下文；`baggage` 只留已登记的键；`deadline` 按 `invocation.md` §2 的严格文法读（`rules.ParseDeadline`），读不出当作没有，生效的截止时间取它与 gRPC 截止时间较早的。`invocation.Context` 以零值的 `time.Time` 表示没有截止时间，恰好是 `0001-01-01T00:00:00Z` 的截止时间记成晚 1 纳秒（仍是过期）。`ToMetadata` 写 UTC、七位小数、`+00:00`（.NET 的 `O` 格式），`trace_state` 为空。
+- 写出错误（`ToProtoError`）：带消息键的错误 `text` 留空，由宿主翻译成调用方的语言；只有 `Literal` 写 `text`；`details` 是 JSON 对象文本，没有为空；`inner` 照写。读入宿主写来的错误（`FromProtoError`、`FromStatus`）：错误码不合文法时整个错误换成 `plugins.process.failed`（`phase` 为 `invoke`，`reason` 为 `invalid error code '<码>'`）；消息键合文法按键还原，否则是自由文本（`text` 空则取码）；`details` 不合法或不是对象当作没有；`inner` 同此；`ok` 为假却没有 `error` 时 `reason` 为 `the host reported a failure without an error`。
+
+回调（`plugin.HostOf(ctx)` 取得的 `Host`，`invocation.md` §5）：
+
+- 回调端点：`XIHAN_PLUGIN_HOST_ADDRESS` 是宿主按偏好排序、以 `;` 分隔的一个或多个 `<network> <address>`，任何一项不合法整个值不合法；运行时取第一个本 SDK 能连的项（Windows 上 `npipe`、`unix`、`tcp`，其他系统 `unix`、`tcp`），之后不换。.NET 宿主在 Windows 上给命名管道加回环 TCP，本 SDK 用 go-winio 连命名管道；只有回环 TCP 能用时经回环 TCP 回调。变量缺失、不合法或没有能连的项时照常服务，启动时记一条 `warning`，每次回调都是 `PLUGINS_UNAVAILABLE_001` + `plugins.host.unavailable`（`reason` 为 `no supported callback endpoint`），不发请求。
+- 本地核对，不合即不发请求：所需权限（`Invoke` 为 `capability:kernel.pipeline`，`Publish` 为 `capability:messaging.queue`）既要在清单 `permissions` 里、也要在 `Configure` 的 `granted_permissions` 里，否则 `PLUGINS_DENIED_002` + `plugins.callback.denied`；回调上下文的 `xihan.tenant` 必须是插件此刻正在处理的某个调用或投递的租户，否则 `plugins.callback.tenant_denied`。`Publish` 这两项都是整批的结果；信封的 `xihantenant` 不在本地核对，由宿主逐项判定。
+- 元数据取自回调所在的调用上下文（当前 Span 的 traceparent、上面写法的 deadline、已登记的 baggage、空的 trace_state），gRPC 截止时间与 deadline 相同，带会话令牌。
+- gRPC 失败按规范的映射表（`rules.MapCallbackStatus`，向量 `callback-status.json`）：`Unauthenticated` 为 `plugins.callback.session_invalid`，`PermissionDenied` 为 `plugins.callback.denied`，`DeadlineExceeded` 为超时，调用上下文已取消的 `Cancelled` 为取消，没取消的 `Cancelled`、`Unavailable` 与连接失败为 `plugins.host.unavailable`（`reason` 为 `<状态名>: <说明>`），`Invoke` 的 `Unimplemented` 与 `InvalidArgument` 为 `kernel.operation.unknown` 与 `kernel.operation.invalid_payload`，其余为 `plugins.process.failed`（`phase` 为操作 ID 或 `publish`）。`Publish` 的 RPC 失败时每一项都是同一个错误；结果数与信封数不同时每一项都是 `plugins.process.failed`（`reason` 为 `the host returned <n> results for <m> envelopes`）；空的信封列表不发请求。
+
+运行时的消息键（`invocation.md` §8，向量 `plugin-messages.json`）：错误的 `details` 就是模板的参数，`id` 一律是清单 ID。宿主有这些键的目录，运行时不随握手发送；SDK 自带同样的 10 种区域（`plugin.RuntimeCatalog()`，`Catalog.Resolver()` 已经合并它，en-US 模板登记为默认模板）供本地渲染。
+
+| 键 | 参数 | 错误码 |
+| --- | --- | --- |
+| `plugins.process.unavailable` | `id`、`state` | `PLUGINS_UNAVAILABLE_001` |
+| `plugins.process.failed` | `id`、`phase`、`reason` | `PLUGINS_UNEXPECTED_001` |
+| `plugins.event.unsubscribed` | `id`、`topic`、`type`、`mode` | `KERNEL_NOTFOUND_001` |
+| `plugins.host.unavailable` | `id`、`reason` | `PLUGINS_UNAVAILABLE_001` |
+| `plugins.callback.denied` | `id`、`permission` | `PLUGINS_DENIED_002` |
+| `plugins.callback.tenant_denied` | `id`、`tenant` | `PLUGINS_DENIED_002` |
+| `plugins.callback.session_invalid` | 无 | `PLUGINS_DENIED_002` |
+
 ## 语言映射
 
 模板参数归到 RFC-0010「模板」的值模型（见[消息模板](#消息模板)）时，Go 的类型这样归：
@@ -215,6 +255,12 @@ Go 自己的文本（日期、`Duration`、结构体）不跨语言：插件的�
 - 管道配置错误的消息改为 .NET 的英文原文（RFC-0004 规则 8，ADR-0236 的补充），各语言逐字相同：如 `Middleware ordering constraints in stage 'validate' form a cycle: 'Guard[a]', 'Guard[b]'.`（成环时按基准次序列出全部仍被卡住的中间件，按名字登记的实例写成 `类型名[名字]`；旧版只写阶段）、`The ordering constraint of middleware 'Guard[a]' references unregistered middleware 'zz'.`、`Unknown pipeline stage 'bogus'.`。约束目标改为逐阶段解析，前一阶段成环先于后一阶段的约束目标未登记报出（旧版先解析全部约束）。错误码不变。迁移：按消息文本匹配的地方改为按错误码匹配。
 - 任意 JSON 原样保留读到的值（RFC-0011 规则 2，ADR-0236 的补充）：载荷与 `Result` 值里类型为 `any` 的成员，数字由 `int64` / `float64` 改为原文的 `json.Number`（上一版按值模型读，`2.0` 写回成 `2`，`1e400` 读成无穷、写不进响应）。`Error.Details` 与插件协议的错误细节仍按值模型读成 `int64` / `float64`。迁移：对 `any` 里的数字做类型断言的代码改为断言 `json.Number`，再用 `Int64()` / `Float64()` 取值。
 - 响应在管道结束之后编码（RFC-0011 规则 10「编码」，ADR-0236 的补充）：中间件里不再有载荷，`operation.ResponsePayloadOf` 去掉，改为 `operation.ResponseOf(ctx)` 返回编码之前的响应对象（类型化调用也有）；写不出的响应由 `KERNEL_UNEXPECTED_001` + 没有键的英文文案改为 `kernel.invocation.unhandled_exception`，原因只进日志，框架错误放进 `inner`，`MarshalJSON` 的 panic 也接住。迁移：在 Egress 里读响应载荷的中间件改读 `ResponseOf` 的对象，需要文本时自己编码。
+- 插件运行时照 ADR-0237 改为与规范一致（见[插件运行时](#插件运行时)），公开 API 的变化：
+  - 去掉 `Options.StopGrace`：`grace_seconds` 为 0 时按 5 秒、stdin 关闭与 SIGTERM 最多 3 秒都由规范写死。迁移：删掉这个字段。
+  - 去掉 `StatusFromError` 与 `FromGrpcError`：生命周期回调的失败按规则换成 `plugins.process.failed`（`reason` 是错误的类型名，旧版是带 `err.Error()` 文本的 `Literal`），回调的 gRPC 失败按规范的映射表在 `Host` 里映射（旧版 `Unauthenticated` 与 `PermissionDenied` 都是 `plugins.callback.denied`，`Unavailable` 是 `plugins.process.unavailable{reason}`）。迁移：需要映射时用一致性模块的 `rules.MapCallbackStatus`。
+  - `FromProtoError(err)` 改为 `FromProtoError(err, pluginID)`，`FromStatus(status)` 改为 `FromStatus(status, pluginID, phase)`：错误码不合法时整个错误换成 `plugins.process.failed`（旧版保留原码在 `details.code`），带键的错误不再带 `text`。迁移：传入清单 ID 与阶段（回调的操作 ID 或 `publish`）。
+  - 新增 `RuntimeCatalog`、`RuntimeCatalogName` 与消息键常量 `MessageUnsubscribed`、`MessageHostUnavailable`、`MessageTenantDenied`、`MessageSessionInvalid`；`Catalog.Resolver()` 合并运行时的目录。
+- 插件运行时的行为变化，调用方一般不用改代码：带消息键的错误写出时 `text` 为空（旧版写渲染后的文本）；`XIHAN_PLUGIN_HOST_ADDRESS` 按列表解析，不合法时照常启动、回调以 `plugins.host.unavailable` 失败（旧版拒绝启动），`HostOf` 在插件的调用里总有值；回调在发出前核对权限与租户；找不到订阅由 `kernel.operation.unknown{topic, type, mode}` 改为 `plugins.event.unsubscribed{id, topic, type, mode}`，匹配多个订阅时依次执行（旧版只交给第一个），处理器 panic 不再让进程崩溃；`Invoke` 先报未声明再报未就绪；`InvokeStream` 读第一帧后才结束；`Started` 不再可服务，`Start` 在应答之前求一次健康；`Handshake` 在 `Failed` 里不再接受，次序不对的 `Stop` 以 `FailedPrecondition` 拒绝；`Stop` 先等在途调用再调停止回调、再应答（旧版先调回调、应答之后才等）；stdin 关闭时调停止回调（`reason` 为 `shutdown`）；配置节不是对象时进入 `Failed`；`Configuration.Decode` 的成员名只按 ASCII 不区分大小写，字符串按 JSON 数字的文法转数字，布尔只认 `true`、`false`（旧版去掉首尾空白，并接受 `1`、`t` 等）；`FromMetadata` 只留已登记的 Baggage 键、截止时间按严格文法读并与 gRPC 截止时间取较早的，`ToMetadata` 写 `O` 格式；`ParseEndpoint` 不去掉首尾空白，按规范的空白集合与回环地址写法核对；tcp 只监听 `127.0.0.1`（旧版也接受 `::1`）；握手里没写方式的订阅写 `competing`；npipe 只允许当前用户；WatchHealth 求健康回调的间隔由 1 秒改为 10 秒；清单开头的 BOM 去掉后再读与发送。
 
 ## 开发
 
@@ -228,7 +274,7 @@ gofmt -l . && go vet ./... && go test ./...
 
 ## 状态
 
-`v0.1`：原语、清单、上下文、管道、操作与插件运行时可用；流式操作（`InvokeStream`）尚未提供；Wasm 载体不在本 SDK 范围。版本随 `go/vN` 以外的普通标签发布（`v0.1.0`）。
+`v0.1`：原语、清单、上下文、管道、操作与插件运行时可用；流式操作在流式契约的 RFC 之前不提供（`InvokeStream` 读第一帧后以 `InvalidArgument` 或 `Unimplemented` 结束）；Wasm 载体不在本 SDK 范围。版本随 `go/vN` 以外的普通标签发布（`v0.1.0`）。
 
 ## 生态
 

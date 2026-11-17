@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"maps"
 	"path"
 	"strings"
 
@@ -46,11 +47,20 @@ func LoadCatalog(name string, fsys fs.FS, directory string) (Catalog, error) {
 	return catalog, nil
 }
 
-// Resolver 把目录变成进程默认的消息解析器，让 Error.Message 能按区域解析插件自己的消息键。
+// Resolver 把目录变成进程默认的消息解析器，让 Error.Message 能按区域解析插件自己的消息键；SDK 运行时的键
+// （RuntimeCatalog，invocation.md §8）合并在下面，同一区域里同名的键以这份目录为准。
 func (c Catalog) Resolver() primitives.Catalog {
 	resolver := primitives.Catalog{}
+	for locale, templates := range runtimeCatalog.Locales {
+		resolver[locale] = maps.Clone(templates)
+	}
 	for locale, templates := range c.Locales {
-		resolver[locale] = templates
+		merged := resolver[locale]
+		if merged == nil {
+			merged = make(map[string]string, len(templates))
+			resolver[locale] = merged
+		}
+		maps.Copy(merged, templates)
 	}
 	return resolver
 }

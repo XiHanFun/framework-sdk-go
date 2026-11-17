@@ -1,0 +1,9 @@
+{
+  "plugins.callback.denied": "外掛 '{id}' 不能使用權限 '{permission}'：權限須在清單中宣告並由主機授予。",
+  "plugins.callback.session_invalid": "外掛工作階段權杖缺失或無效。",
+  "plugins.callback.tenant_denied": "外掛 '{id}' 不能在租用戶 '{tenant}' 中執行：回呼只能帶主機交給外掛處理的呼叫的租用戶。",
+  "plugins.event.unsubscribed": "外掛 '{id}' 沒有主題 '{topic}'、類型 '{type}'、方式 '{mode}' 的訂閱。",
+  "plugins.host.unavailable": "外掛 '{id}' 連不上主機：{reason}",
+  "plugins.process.failed": "外掛 '{id}' 在 {phase} 階段失敗：{reason}",
+  "plugins.process.unavailable": "外掛 '{id}' 無法使用（狀態：{state}）。"
+}

@@ -2,8 +2,9 @@ package plugin
 
 import (
 	"context"
-
 	"time"
+
+	"github.com/xihanfun/framework-spec/conformance/rules"
 
 	"github.com/xihanfun/framework-sdk-go/internal/jsoncodec"
 	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
@@ -12,12 +13,17 @@ import (
 	"github.com/xihanfun/framework-sdk-go/primitives"
 )
 
-// ToProtoError 把原语层错误编码为协议的 Error：details 是按值模型写出的 JSON 对象文本（整数值的浮点带小数点，非有限值写成字符串，ADR-0236），inner 递归。
+// ToProtoError 把原语层错误编码为协议的 Error（invocation.md §3「写出」）：code 与 message_key 原样；带消息键的错误 text 留空，
+// 由宿主按目录翻译成调用方的语言（RFC-0010），只有自由文本错误（Literal）写 text；details 是按值模型写出的 JSON 对象文本
+// （整数值的浮点带小数点，非有限值写成字符串，ADR-0236），没有时为空；inner 递归写出。
 func ToProtoError(err *primitives.Error) *pluginv1.Error {
 	if err == nil {
 		return nil
 	}
-	encoded := &pluginv1.Error{Code: err.Code, MessageKey: err.MessageKey, Text: err.Message()}
+	encoded := &pluginv1.Error{Code: err.Code, MessageKey: err.MessageKey}
+	if err.MessageKey == "" {
+		encoded.Text = err.Message()
+	}
 	if len(err.Details) > 0 {
 		if details, marshalErr := jsoncodec.Marshal(err.Details); marshalErr == nil {
 			encoded.Details = string(details)
@@ -29,11 +35,17 @@ func ToProtoError(err *primitives.Error) *pluginv1.Error {
 	return encoded
 }
 
-// FromProtoError 把协议的 Error 还原为原语层错误；details 按值模型读（64 位范围内整数写法的数字是 int64，其余是 float64，数组与对象是 []any 与 map[string]any，ADR-0236），
-// 不是合法的 JSON 对象时没有细节；码不合法时换成 PLUGINS_UNEXPECTED_001 并保留原码在细节里。
-func FromProtoError(err *pluginv1.Error) *primitives.Error {
+// FromProtoError 按 invocation.md §3「读入」还原宿主写来的 Error；pluginID 是插件的清单 ID：
+//   - code 不合错误码文法时整个错误换成 PLUGINS_UNEXPECTED_001 + plugins.process.failed（phase 为 invoke，reason 为 invalid error code '<code>'）；
+//   - message_key 合消息键文法的按键还原（不带 text），否则是自由文本错误，文案取 text，text 为空时取 code；
+//   - details 为空、通不过共同的 JSON 读取检查（RFC-0001）或不是对象时当作没有细节，否则按值模型读（64 位范围内整数写法的数字是 int64，
+//     其余是 float64，数组与对象是 []any 与 map[string]any，ADR-0236）；inner 按同样的规则递归。
+func FromProtoError(err *pluginv1.Error, pluginID string) *primitives.Error {
 	if err == nil {
 		return nil
+	}
+	if !primitives.IsErrorCode(err.Code) {
+		return processFailed(pluginID, phaseInvoke, reasonInvalidErrorCode(err.Code))
 	}
 	var details map[string]any
 	if err.Details != "" {
@@ -41,22 +53,18 @@ func FromProtoError(err *pluginv1.Error) *primitives.Error {
 			details = jsoncodec.FromJSON(root).(map[string]any)
 		}
 	}
-	code := err.Code
-	if !primitives.IsErrorCode(code) {
-		if details == nil {
-			details = map[string]any{}
-		}
-		details["code"] = err.Code
-		code = ErrorCodeUnexpected
-	}
-	decoded := &primitives.Error{Code: code, MessageKey: err.MessageKey, Text: err.Text, Details: details}
-	if decoded.MessageKey != "" && !primitives.IsMessageKey(decoded.MessageKey) {
-		decoded.MessageKey = ""
-	}
+	var inner *primitives.Error
 	if err.Inner != nil {
-		decoded.Inner = FromProtoError(err.Inner)
+		inner = FromProtoError(err.Inner, pluginID)
 	}
-	return decoded
+	if primitives.IsMessageKey(err.MessageKey) {
+		return &primitives.Error{Code: err.Code, MessageKey: err.MessageKey, Details: details, Inner: inner}
+	}
+	text := err.Text
+	if text == "" {
+		text = err.Code
+	}
+	return primitives.Literal(err.Code, text, details, inner)
 }
 
 // ToStatus 把结果编码为协议的 Status。
@@ -67,67 +75,55 @@ func ToStatus(result primitives.Result[primitives.Unit]) *pluginv1.Status {
 	return &pluginv1.Status{Ok: false, Error: ToProtoError(result.Err())}
 }
 
-// FromStatus 把协议的 Status 还原为结果；失败但没有错误时为 PLUGINS_UNEXPECTED_001。
-func FromStatus(status *pluginv1.Status) primitives.Result[primitives.Unit] {
+// FromStatus 还原宿主写来的 Status（invocation.md §3）：错误按 FromProtoError 读；ok 为假却没有 error 时为 PLUGINS_UNEXPECTED_001 +
+// plugins.process.failed，phase 是 phase（回调的操作 ID 或 publish），reason 为 the host reported a failure without an error。
+func FromStatus(status *pluginv1.Status, pluginID, phase string) primitives.Result[primitives.Unit] {
 	if status != nil && status.Ok {
 		return primitives.Success()
 	}
 	if status == nil || status.Error == nil {
-		return primitives.Fail[primitives.Unit](primitives.Unexpected(ErrorCodeUnexpected, MessageUnexpected, map[string]any{"reason": "the status carries no error"}, nil))
+		return primitives.Fail[primitives.Unit](processFailed(pluginID, phase, reasonHostFailureWithoutError))
 	}
-	return primitives.Fail[primitives.Unit](FromProtoError(status.Error))
+	return primitives.Fail[primitives.Unit](FromProtoError(status.Error, pluginID))
 }
 
-// StatusFromError 把回调里的 Go 错误转成失败结果：*primitives.Error 原样，其他为 PLUGINS_UNEXPECTED_001。
-func StatusFromError(err error) primitives.Result[primitives.Unit] {
-	if err == nil {
-		return primitives.Success()
-	}
-	if typed, ok := err.(*primitives.Error); ok {
-		return primitives.Fail[primitives.Unit](typed)
-	}
-	if framework, ok := err.(*primitives.FrameworkError); ok {
-		return primitives.Fail[primitives.Unit](framework.ToError())
-	}
-	return primitives.Fail[primitives.Unit](primitives.Literal(ErrorCodeUnexpected, err.Error(), nil, nil))
-}
-
-// FromMetadata 从协议的上下文元数据构造调用上下文：截止时间取元数据的 RFC 3339 时间，没有时取 gRPC 的截止时间；
-// 追踪取 traceparent；Baggage 只收格式合法的键。parent 承载 gRPC 的取消。
+// FromMetadata 从协议的上下文元数据还原调用上下文（invocation.md §2「接收方还原上下文」）；parent 承载 gRPC 的取消与截止时间：
+//   - trace_parent 按 RFC-0003 的文法取，不合文法即没有父 Span；trace_state 不进上下文；
+//   - baggage 只保留已登记的键（conventions/baggage-keys.md），值不能进入上下文的丢掉（invocation.WithBaggage）；
+//   - deadline 按严格的文法读（rules.ParseDeadline），读不出当作没有；生效的截止时间取它与 parent 的截止时间中较早的一个。
 func FromMetadata(parent context.Context, metadata *pluginv1.InvocationMetadata) *invocation.Context {
 	options := []invocation.Option{}
-	if metadata != nil {
-		if metadata.TraceParent != "" {
-			options = append(options, invocation.WithTraceParent(metadata.TraceParent))
-		}
-		if metadata.Deadline != "" {
-			if deadline, err := time.Parse(time.RFC3339Nano, metadata.Deadline); err == nil {
-				options = append(options, invocation.WithDeadline(deadline))
-			}
-		}
-		baggage := map[string]string{}
-		for key, value := range metadata.Baggage {
-			if primitives.IsBaggageKeyWellFormed(key) {
-				baggage[key] = value
-			}
-		}
-		if len(baggage) > 0 {
-			options = append(options, invocation.WithBaggage(baggage))
+	if traceParent := metadata.GetTraceParent(); traceParent != "" {
+		options = append(options, invocation.WithTraceParent(traceParent))
+	}
+	baggage := map[string]string{}
+	for key, value := range metadata.GetBaggage() {
+		if primitives.IsBaggageKeyRegistered(key) {
+			baggage[key] = value
 		}
 	}
-	if metadata == nil || metadata.Deadline == "" {
-		if deadline, ok := parent.Deadline(); ok {
-			options = append(options, invocation.WithDeadline(deadline))
+	if len(baggage) > 0 {
+		options = append(options, invocation.WithBaggage(baggage))
+	}
+	// 元数据的写法不合法时不能连 gRPC 自身的截止时间一起丢掉：两者各自读，取较早的
+	grpcDeadline, hasGRPC := parent.Deadline()
+	if deadline, ok := rules.EffectiveDeadline(metadata.GetDeadline(), grpcDeadline, hasGRPC); ok {
+		// invocation.Context 以零值的 time.Time 表示没有截止时间：恰好是 0001-01-01T00:00:00Z（文法允许的最早时刻，早已过期）的截止时间
+		// 记成晚 1 纳秒，仍是过期，不变成没有截止时间；写出时截到 100 纳秒，与读到的文本相同
+		if deadline.IsZero() {
+			deadline = deadline.Add(time.Nanosecond)
 		}
+		options = append(options, invocation.WithDeadline(deadline))
 	}
 	return invocation.New(parent, options...)
 }
 
-// ToMetadata 把调用上下文编码为协议的上下文元数据：追踪、截止时间与已登记的 Baggage（RFC-0003 规则 3）。
+// ToMetadata 把调用上下文编码为协议的上下文元数据（invocation.md §2、§5）：trace_parent 是当前 Span 的 traceparent；
+// deadline 按 .NET 的 O 格式写（UTC、七位小数、+00:00，rules.FormatDeadline）；baggage 只有已登记的键（RFC-0003 规则 3）；trace_state 为空。
 func ToMetadata(ctx *invocation.Context) *pluginv1.InvocationMetadata {
 	metadata := &pluginv1.InvocationMetadata{TraceParent: ctx.TraceParent(), Baggage: map[string]string{}}
 	if deadline, ok := ctx.Deadline(); ok {
-		metadata.Deadline = deadline.UTC().Format(time.RFC3339Nano)
+		metadata.Deadline = rules.FormatDeadline(deadline)
 	}
 	for key, value := range ctx.WithoutUnregisteredBaggage().Baggage() {
 		metadata.Baggage[key] = value
@@ -178,7 +174,7 @@ func FromProtoEnvelope(envelope *pluginv1.Envelope) Envelope {
 	}
 }
 
-// toProtoHealth 把自报健康编码为协议消息。
+// toProtoHealth 把健康编码为协议消息。
 func toProtoHealth(health Health) *pluginv1.HealthResponse {
 	response := &pluginv1.HealthResponse{State: pluginv1.LifecycleState(health.State), Error: ToProtoError(health.Error)}
 	for _, item := range health.Items {

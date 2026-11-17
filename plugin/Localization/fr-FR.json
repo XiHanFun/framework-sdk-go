@@ -1,0 +1,9 @@
+{
+  "plugins.callback.denied": "Le plugin '{id}' ne peut pas utiliser la permission '{permission}' : elle doit être déclarée dans le manifeste et accordée par l'hôte.",
+  "plugins.callback.session_invalid": "Le jeton de session du plugin est absent ou invalide.",
+  "plugins.callback.tenant_denied": "Le plugin '{id}' ne peut pas agir dans le locataire '{tenant}' : un rappel ne peut porter que le locataire d'un appel que l'hôte a confié au plugin.",
+  "plugins.event.unsubscribed": "Le plugin '{id}' n'a aucun abonnement pour le sujet '{topic}', le type '{type}' et le mode '{mode}'.",
+  "plugins.host.unavailable": "Le plugin '{id}' ne peut pas joindre l'hôte : {reason}",
+  "plugins.process.failed": "Le plugin '{id}' a échoué pendant {phase} : {reason}",
+  "plugins.process.unavailable": "Le plugin '{id}' est indisponible (état : {state})."
+}
