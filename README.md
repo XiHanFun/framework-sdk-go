@@ -270,6 +270,8 @@ buf generate                         # regenerate plugin/v1 after changing the p
 gofmt -l . && go vet ./... && go test ./...
 ```
 
+`vectors_test.go` at the repository root checks that every vector file embedded in the conformance module pinned by `go.mod` is either replayed by a test or exempted with a reason; when the spec adds a vector file, this test fails until the file is replayed or added to the exemptions with its reason.
+
 Fetching dependencies from mainland China: `GOPROXY=https://goproxy.cn,direct GOSUMDB=sum.golang.google.cn`.
 
 ## Status

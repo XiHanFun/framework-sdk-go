@@ -270,6 +270,8 @@ buf generate                         # 改协议后重新生成 plugin/v1
 gofmt -l . && go vet ./... && go test ./...
 ```
 
+仓库根的 `vectors_test.go` 核对 `go.mod` 钉住的一致性模块内嵌的每个向量文件要么有测试回放、要么列为豁免并写明理由；规范新增向量文件时这个测试失败，要么回放它，要么写进豁免并给出理由。
+
 国内拉依赖：`GOPROXY=https://goproxy.cn,direct GOSUMDB=sum.golang.google.cn`。
 
 ## 状态

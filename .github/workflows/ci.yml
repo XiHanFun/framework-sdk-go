@@ -3,9 +3,9 @@ name: CI
 # Go SDK 的门禁：生成物与规范一致、格式与静态检查、全部测试（含用黑盒运行器跑 echo-go）。
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:
@@ -43,7 +43,13 @@ jobs:
         shell: bash
         run: |
           buf generate
-          git diff --exit-code -- plugin/v1
+          # git diff 看不见新增的未跟踪文件，用 git status 判空：改动、删除与新增都算不一致
+          if [ -n "$(git status --porcelain -- plugin/v1)" ]; then
+            echo "buf generate does not reproduce the committed plugin/v1:"
+            git status --short -- plugin/v1
+            git diff -- plugin/v1
+            exit 1
+          fi
 
       - name: 格式与静态检查
         shell: bash

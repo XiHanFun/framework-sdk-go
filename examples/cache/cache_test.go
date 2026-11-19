@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -67,13 +68,60 @@ func TestCachePassesTheConformanceSuite(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatalf("no results (run: %v)\n%s", runErr, stderr.String())
 	}
+	// 运行器给出的用例序列必须恰好是它的 AllCases：少跑、多跑或换了次序都算失败
+	ran := make([]string, 0, len(results))
 	for _, r := range results {
-		if !r.Passed {
+		ran = append(ran, r.Case)
+	}
+	if all := runnerCases(t, ctx, runner); !slices.Equal(ran, all) {
+		t.Errorf("the runner ran %v, want every case of AllCases in order: %v", ran, all)
+	}
+	skipped := map[string]bool{}
+	for _, r := range results {
+		// 运行器把跳过也记为 Passed，所以先看 Skipped：只有 expectedSkips 里的用例可以跳过
+		switch {
+		case r.Skipped && expectedSkips[r.Case] != "":
+			skipped[r.Case] = true
+			t.Logf("%s: skipped as expected (%s): %s", r.Case, expectedSkips[r.Case], r.Message)
+		case r.Skipped:
+			t.Errorf("%s: skipped: %s", r.Case, r.Message)
+		case !r.Passed:
 			t.Errorf("%s: %s", r.Case, r.Message)
-		} else {
-			t.Logf("%s: passed in %dms (skipped=%v)", r.Case, r.DurationMs, r.Skipped)
+		default:
+			t.Logf("%s: passed in %dms", r.Case, r.DurationMs)
 		}
 	}
+	for name := range expectedSkips {
+		if !skipped[name] {
+			t.Errorf("%s: expected to be skipped but was not; update expectedSkips", name)
+		}
+	}
+}
+
+// expectedSkips 是 cache-go 按运行器的规则应当跳过的用例及其理由；其余用例跳过即失败。
+var expectedSkips = map[string]string{
+	"event": "cache-go declares no subscription, so the runner has nothing to deliver",
+}
+
+// runnerCases 返回运行器的全部用例名，即一致性模块 plugin 包导出的 AllCases，按执行顺序。
+// 测试不能直接引用 AllCases：那个包链接运行器自带的协议生成代码，与本 SDK 的 plugin/v1 注册同一个 plugin.proto，
+// 进同一个二进制就在初始化时 panic；运行器的用法说明（help）以 "cases: " 开头的一行逐项列出 AllCases，从这里读。
+func runnerCases(t *testing.T, ctx context.Context, runner string) []string {
+	t.Helper()
+	command := exec.CommandContext(ctx, runner, "help")
+	var output bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Run(); err != nil {
+		t.Fatalf("%s help: %v\n%s", runner, err, output.String())
+	}
+	for line := range strings.Lines(output.String()) {
+		if list, ok := strings.CutPrefix(strings.TrimSpace(line), "cases: "); ok {
+			return strings.Split(list, ", ")
+		}
+	}
+	t.Fatalf("the usage of the runner does not list its cases:\n%s", output.String())
+	return nil
 }
 
 // run 执行一个命令并返回 stdout；失败即终止测试。
