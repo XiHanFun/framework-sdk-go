@@ -1,0 +1,7 @@
+interface:
+  display_name: "Go SDK 变更整理"
+  short_description: "把用户可感知变化写进文档页的破坏性改动与迁移"
+  default_prompt: "使用 $xihan-sdk-go-changelog-collect 整理指定范围的变化并写进文档页。"
+
+policy:
+  allow_implicit_invocation: true

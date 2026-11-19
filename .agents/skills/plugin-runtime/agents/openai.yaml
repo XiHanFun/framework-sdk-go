@@ -1,0 +1,7 @@
+interface:
+  display_name: "Go SDK 插件运行时"
+  short_description: "按插件协议实现运行时并用黑盒运行器验证"
+  default_prompt: "使用 $xihan-sdk-go-plugin-runtime 修改并验证进程外插件运行时。"
+
+policy:
+  allow_implicit_invocation: true

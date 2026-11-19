@@ -1,0 +1,7 @@
+interface:
+  display_name: "Go SDK 测试与门禁"
+  short_description: "按 ci.yml 复现门禁、维护向量覆盖与运行器测试"
+  default_prompt: "使用 $xihan-sdk-go-testing-release 跑全部门禁并排查失败。"
+
+policy:
+  allow_implicit_invocation: true

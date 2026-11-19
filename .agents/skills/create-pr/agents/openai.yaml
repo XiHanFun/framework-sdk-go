@@ -1,0 +1,7 @@
+interface:
+  display_name: "Go SDK 创建 PR"
+  short_description: "准备、检查并在明确要求时创建 Go SDK Pull Request"
+  default_prompt: "使用 $xihan-sdk-go-create-pr 为当前分支准备 Pull Request。"
+
+policy:
+  allow_implicit_invocation: true

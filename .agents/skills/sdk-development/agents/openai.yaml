@@ -1,0 +1,7 @@
+interface:
+  display_name: "Go SDK 开发"
+  short_description: "设计和对齐 Go SDK 的原语、清单、上下文、管道与操作契约"
+  default_prompt: "使用 $xihan-sdk-go-development 按规范实现并验证一项 Go SDK 能力。"
+
+policy:
+  allow_implicit_invocation: true

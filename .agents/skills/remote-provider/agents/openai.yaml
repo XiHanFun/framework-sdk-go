@@ -1,0 +1,7 @@
+interface:
+  display_name: "Go SDK 远程 Provider"
+  short_description: "实现和验证 caching.distributed@1 远程 Provider 的插件侧"
+  default_prompt: "使用 $xihan-sdk-go-remote-provider 修改并验证 caching 操作集或存储实现。"
+
+policy:
+  allow_implicit_invocation: true
