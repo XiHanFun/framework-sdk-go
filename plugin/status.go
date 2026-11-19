@@ -38,7 +38,7 @@ func ToProtoError(err *primitives.Error) *pluginv1.Error {
 // pluginID 是插件的清单 ID：
 //   - code 不合错误码文法时整个错误换成 PLUGINS_UNEXPECTED_001 + plugins.process.failed（phase 一律为 invoke，reason 为
 //     invalid error code '<code>'），原来的 inner 丢掉；
-//   - message_key 合消息键文法的按键还原、不取 text，否则是自由文本错误，文案取 text，text 为空时取 code；
+//   - message_key 合消息键文法的按键还原、不取 text，否则是自由文本错误，文案取 text，text 为空或只有空白（RFC-0001「空白字符」）时取 code；
 //   - details 为空、只有空白、是空对象、通不过共同的 JSON 读取检查（RFC-0001）、不是对象，或任何一层有读成双精度会溢出的数时当作没有细节，
 //     否则按值模型读（64 位范围内整数写法的数字是 int64，其余是 float64，下溢读成 0，数组与对象是 []any 与 map[string]any）；
 //     inner 按同样的规则递归。
@@ -59,7 +59,7 @@ func toRulesError(err *pluginv1.Error) rules.ProtoError {
 	return converted
 }
 
-// fromDecoded 把规则函数读出的错误换成原语层错误：带键的按键，否则是 Literal（ReadProtoError 保证自由文本错误的文案非空）。
+// fromDecoded 把规则函数读出的错误换成原语层错误：带键的按键，否则是 Literal（ReadProtoError 保证自由文本错误的文案不为空、也不只有空白）。
 func fromDecoded(decoded rules.DecodedError) *primitives.Error {
 	var inner *primitives.Error
 	if decoded.Inner != nil {

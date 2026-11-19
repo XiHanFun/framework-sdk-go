@@ -2,9 +2,11 @@ package primitives
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/xihanfun/framework-sdk-go/internal/jsoncodec"
 	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
+	"github.com/xihanfun/framework-spec/conformance/rules"
 )
 
 // Error 是可恢复失败的描述（RFC-0001 Error）：错误码面向程序，消息键与参数面向人；不可变，方法返回新值。
@@ -30,13 +32,22 @@ func NewError(code, messageKey string, details map[string]any, inner *Error) *Er
 	return &Error{Code: code, MessageKey: messageKey, Details: details, Inner: inner}
 }
 
-// Literal 用已解析的文案创建错误：线上还原与异常转换用，没有消息键。
+// Literal 用已解析的文案创建错误：线上还原与异常转换用，没有消息键；文案为空或只有空白是编程错误，panic FrameworkError。
 func Literal(code, text string, details map[string]any, inner *Error) *Error {
 	mustErrorCode(code)
-	if text == "" {
-		panic(&FrameworkError{Code: ErrorCodeInvalidArgument, Message: "A literal error needs a text."})
-	}
+	mustText(text, "A literal error")
 	return &Error{Code: code, Text: text, Details: details, Inner: inner}
+}
+
+// isBlank 判断文案是否为空或只有空白：空白按 RFC-0001「空白字符」的 25 个码位（rules.IsWhitespace，与握手行同一个函数），
+// 不用 unicode.IsSpace，免得与规范的表悄悄分叉（ADR-0245）。
+func isBlank(text string) bool { return strings.TrimFunc(text, rules.IsWhitespace) == "" }
+
+// mustText 校验自由文本：为空或只有空白即 panic。
+func mustText(text, owner string) {
+	if isBlank(text) {
+		panic(&FrameworkError{Code: ErrorCodeInvalidArgument, Message: owner + " needs a text that is not empty or whitespace."})
+	}
 }
 
 // Validation 创建 VALIDATION 类错误。
@@ -126,8 +137,9 @@ func (e *Error) WithCode(code string) *Error {
 	return &clone
 }
 
-// WithText 填入已解析的文案。
+// WithText 填入已解析的文案；文案为空或只有空白是编程错误，panic FrameworkError。
 func (e *Error) WithText(text string) *Error {
+	mustText(text, "WithText")
 	clone := *e
 	clone.Text = text
 	return &clone
@@ -167,7 +179,7 @@ func (e *Error) MarshalJSON() ([]byte, error) {
 	return append(encoded, '}'), nil
 }
 
-// UnmarshalJSON 从线上编码还原（RFC-0001）：先过共同的 JSON 读取检查；code 必填且合法；message 必填、是非空字符串；messageKey 有就必须合法；
+// UnmarshalJSON 从线上编码还原（RFC-0001）：先过共同的 JSON 读取检查；code 必填且合法；message 必填、是字符串，不能为空或只有空白；messageKey 有就必须合法；
 // details 必须是 JSON 对象，inner 必须是错误对象（null 与数组都拒绝）；成员名区分大小写，未知成员忽略
 func (e *Error) UnmarshalJSON(data []byte) error {
 	root, err := wireObject(data, "an error")
@@ -196,8 +208,9 @@ func decodeError(data []byte, root *jsontext.Value) (*Error, error) {
 		return nil, &FrameworkError{Code: ErrorCodeInvalidArgument, Message: fmt.Sprintf("The error code %s must match <DOMAIN>_<KIND>_<NNN>.", raw(data, codeValue))}
 	}
 	decoded := &Error{Code: code}
-	if decoded.Text, ok = wireString(root.Find("message")); !ok || decoded.Text == "" {
-		return nil, wireError("an error on the wire needs the member 'message' as a non-empty string", nil)
+	// 只有空白的 message 与空串一样不合法（RFC-0001「空白字符」，ADR-0245）：Error 的文案至少要有一个空白之外的字符
+	if decoded.Text, ok = wireString(root.Find("message")); !ok || isBlank(decoded.Text) {
+		return nil, wireError("an error on the wire needs the member 'message' as a string that is not empty or whitespace", nil)
 	}
 	if key, has := root.Find("messageKey"); has {
 		if decoded.MessageKey, ok = wireString(key, true); !ok || !IsMessageKey(decoded.MessageKey) {

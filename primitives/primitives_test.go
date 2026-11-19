@@ -3,6 +3,7 @@ package primitives_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/xihanfun/framework-spec/conformance"
@@ -126,6 +127,51 @@ func TestErrorFactoriesCheckTheKind(t *testing.T) {
 		}
 	}()
 	primitives.NotFound("ORDERS_VALIDATION_001", "orders.missing", nil)
+}
+
+// whitespace 是 RFC-0001「空白字符」的 25 个码位。
+var whitespace = []rune{
+	0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20, 0x85, 0xA0, 0x1680,
+	0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200A,
+	0x2028, 0x2029, 0x202F, 0x205F, 0x3000,
+}
+
+// TestFreeTextIsNeitherEmptyNorWhitespace 核对 Literal 与 WithText 的自由文本为空或只有空白时以 PRIMITIVES_VALIDATION_001 panic，
+// 空白按规范的 25 个码位：U+001C–U+001F 与零宽空格不是空白，照常接受（RFC-0001「空白字符」，ADR-0245）
+func TestFreeTextIsNeitherEmptyNorWhitespace(t *testing.T) {
+	if len(whitespace) != 25 {
+		t.Fatalf("the table has %d code points, want 25", len(whitespace))
+	}
+	keyed := primitives.NotFound("ORDERS_NOTFOUND_001", "orders.missing", nil)
+	rejected := []string{"", " ", " \t　", string(whitespace)}
+	for _, r := range whitespace {
+		rejected = append(rejected, string(r))
+	}
+	for _, text := range rejected {
+		assertInvalidArgument(t, fmt.Sprintf("Literal(%q)", text), func() { primitives.Literal("ORDERS_UNEXPECTED_001", text, nil, nil) })
+		assertInvalidArgument(t, fmt.Sprintf("WithText(%q)", text), func() { keyed.WithText(text) })
+	}
+	for _, text := range []string{"\u001c", "​", "\u001c\u001d\u001e\u001f", " boom\t"} {
+		if got := primitives.Literal("ORDERS_UNEXPECTED_001", text, nil, nil).Message(); got != text {
+			t.Errorf("Literal(%q).Message() = %q", text, got)
+		}
+		if got := keyed.WithText(text).Message(); got != text {
+			t.Errorf("WithText(%q).Message() = %q", text, got)
+		}
+	}
+}
+
+// assertInvalidArgument 断言 call 以 PRIMITIVES_VALIDATION_001 的 FrameworkError panic。
+func assertInvalidArgument(t *testing.T, name string, call func()) {
+	t.Helper()
+	defer func() {
+		recovered := recover()
+		var framework *primitives.FrameworkError
+		if err, isError := recovered.(error); !isError || !errors.As(err, &framework) || framework.Code != primitives.ErrorCodeInvalidArgument {
+			t.Errorf("%s must panic with PRIMITIVES_VALIDATION_001, got %v", name, recovered)
+		}
+	}()
+	call()
 }
 
 func TestErrorMessagesResolveThroughTheDefaultCatalog(t *testing.T) {
