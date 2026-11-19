@@ -33,58 +33,95 @@ var replayedVectors = []string{
 	"provider/caching-distributed.json",       // caching.TestOperationsReplayTheVectors
 }
 
-// exemptedVectors 是本 SDK 不回放的向量文件及其理由。
-var exemptedVectors = map[string]string{
-	"plugin/wasm-exports.json": "Wasm ABI exports are checked by hosts; this SDK has no Wasm plugin runtime.",
-	"security/webauthn.json":   "WebAuthn verification is host-side (RFC-0008); this SDK does not verify credentials.",
-}
+// claimedProfiles 是本 SDK 认领的一致性档（RFC-0024「一致性档」）：core 所有实现都认领，plugin 是写进程外插件的一侧，
+// provider:caching.distributed@1 是 caching 包与 examples/cache 提供的远程 Provider 操作集。
+var claimedProfiles = []string{"core", "plugin", "provider:caching.distributed@1"}
 
-// TestEveryVectorIsReplayedOrExempted 核对一致性模块内嵌的全部向量文件恰好是回放集合与豁免集合之并（ADR-0242）：
-// 两个集合不相交，列出的文件都存在，存在的文件都在其一；规范新增或删除向量文件时这里失败，而不是悄悄不回放。
-func TestEveryVectorIsReplayedOrExempted(t *testing.T) {
+// gaps 是认领的档要求回放、本 SDK 却没有回放的向量文件及其理由（RFC-0024「实现钉规范」第 3 条）；目前没有缺口。
+var gaps = map[string]string{}
+
+// TestEveryVectorOfTheClaimedProfilesIsReplayed 按 go.mod 钉住的一致性模块内嵌的档表核对认领的档（RFC-0024「一致性档」，ADR-0242）：
+// 认领的档都有定义，它们要求的向量要么被回放、要么列为缺口，缺口只能是认领的档要求而没有回放的向量，回放的文件都存在；
+// 规范在认领的档里新增向量时这里失败，而不是悄悄不回放。回放认领的档以外的向量是允许的。
+func TestEveryVectorOfTheClaimedProfilesIsReplayed(t *testing.T) {
+	table, err := conformance.Profiles()
+	if err != nil {
+		t.Fatal(err)
+	}
 	names, err := conformance.Names()
 	if err != nil {
 		t.Fatal(err)
 	}
-	existing := map[string]bool{}
-	for _, name := range names {
-		existing[name] = true
+
+	// 未知的档单独报出，其余的档照常核对，免得一个错的档名盖住别的问题
+	var defined, undefined []string
+	for _, id := range claimedProfiles {
+		if _, ok := table.Profile(id); ok {
+			defined = append(defined, id)
+		} else {
+			undefined = append(undefined, id)
+		}
+	}
+	if len(undefined) > 0 {
+		t.Errorf("claimed profiles that the spec does not define: %s", sortedList(undefined))
+	}
+	required, err := table.RequiredVectors(defined...)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	listed := map[string]bool{}
+	isRequired := map[string]bool{}
+	for _, name := range required {
+		isRequired[name] = true
+	}
+	isReplayed := map[string]bool{}
 	for _, name := range replayedVectors {
-		listed[name] = true
+		isReplayed[name] = true
 	}
-	var both []string
-	for name := range exemptedVectors {
-		if listed[name] {
-			both = append(both, name)
-		}
-		listed[name] = true
-	}
-	slices.Sort(both)
-	if len(both) > 0 {
-		t.Errorf("vector files both replayed and exempted: %s", strings.Join(both, ", "))
+	exists := map[string]bool{}
+	for _, name := range names {
+		exists[name] = true
 	}
 
-	var neither []string
-	for _, name := range names {
-		if !listed[name] {
-			neither = append(neither, name)
+	var uncovered []string
+	for _, name := range required {
+		if _, isGap := gaps[name]; !isReplayed[name] && !isGap {
+			uncovered = append(uncovered, name)
 		}
 	}
-	if len(neither) > 0 {
-		t.Errorf("spec vector files neither replayed nor exempted: %s", strings.Join(neither, ", "))
+	if len(uncovered) > 0 {
+		t.Errorf("vector files of the claimed profiles that are neither replayed nor listed as gaps: %s", sortedList(uncovered))
+	}
+
+	var outside, replayedGaps []string
+	for name := range gaps {
+		if !isRequired[name] {
+			outside = append(outside, name)
+		}
+		if isReplayed[name] {
+			replayedGaps = append(replayedGaps, name)
+		}
+	}
+	if len(outside) > 0 {
+		t.Errorf("gaps outside the claimed profiles: %s", sortedList(outside))
+	}
+	if len(replayedGaps) > 0 {
+		t.Errorf("gaps that are replayed; remove them from gaps: %s", sortedList(replayedGaps))
 	}
 
 	var missing []string
-	for name := range listed {
-		if !existing[name] {
+	for _, name := range replayedVectors {
+		if !exists[name] {
 			missing = append(missing, name)
 		}
 	}
-	slices.Sort(missing)
 	if len(missing) > 0 {
-		t.Errorf("listed vector files that the spec does not have: %s", strings.Join(missing, ", "))
+		t.Errorf("replayed vector files that the spec does not have: %s", sortedList(missing))
 	}
+}
+
+// sortedList 把文件名或档名排序后以逗号连接，失败信息与顺序无关。
+func sortedList(names []string) string {
+	slices.Sort(names)
+	return strings.Join(names, ", ")
 }

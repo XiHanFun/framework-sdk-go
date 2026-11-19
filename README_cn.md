@@ -270,13 +270,21 @@ buf generate                         # 改协议后重新生成 plugin/v1
 gofmt -l . && go vet ./... && go test ./...
 ```
 
-仓库根的 `vectors_test.go` 核对 `go.mod` 钉住的一致性模块内嵌的每个向量文件要么有测试回放、要么列为豁免并写明理由；规范新增向量文件时这个测试失败，要么回放它，要么写进豁免并给出理由。
+仓库根的 `vectors_test.go` 按 `go.mod` 钉住的一致性模块内嵌的档表核对认领的一致性档（RFC-0024）：认领的档要求的每个向量要么有测试回放、要么列为缺口并写明理由；规范在认领的档里新增向量时这个测试失败，要么回放它，要么列为缺口并给出理由。
 
 国内拉依赖：`GOPROXY=https://goproxy.cn,direct GOSUMDB=sum.golang.google.cn`。
 
 ## 状态
 
 `v0.1`：原语、清单、上下文、管道、操作与插件运行时可用；流式操作在流式契约的 RFC 之前不提供（`InvokeStream` 读第一帧后以 `InvalidArgument` 或 `Unimplemented` 结束）；Wasm 载体不在本 SDK 范围。版本随 `go/vN` 以外的普通标签发布（`v0.1.0`）。
+
+一致性（RFC-0024）：
+
+- 钉的规范版本：提交 `386501f`（`spec/` 子模块与 `go.mod` 里的一致性模块）；规范还没有打标签，首个标签计划为 `v1.0.0-rc.1`。
+- 认领的档：`core`、`plugin` 与 `provider:caching.distributed@1`。
+- 缺口：无。
+
+在有钉在规范标签上的发布版之前，成熟度是 Experimental。
 
 ## 生态
 

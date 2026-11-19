@@ -270,13 +270,21 @@ buf generate                         # regenerate plugin/v1 after changing the p
 gofmt -l . && go vet ./... && go test ./...
 ```
 
-`vectors_test.go` at the repository root checks that every vector file embedded in the conformance module pinned by `go.mod` is either replayed by a test or exempted with a reason; when the spec adds a vector file, this test fails until the file is replayed or added to the exemptions with its reason.
+`vectors_test.go` at the repository root checks the claimed conformance profiles against the profile table embedded in the conformance module pinned by `go.mod` (RFC-0024): every vector the claimed profiles require is either replayed by a test or listed as a gap with a reason; when the spec adds a vector to a claimed profile, this test fails until the file is replayed or listed as a gap with its reason.
 
 Fetching dependencies from mainland China: `GOPROXY=https://goproxy.cn,direct GOSUMDB=sum.golang.google.cn`.
 
 ## Status
 
 `v0.1`: primitives, manifests, the context, the pipeline, operations and the plugin runtime are usable; streaming operations are not provided before the RFC of the streaming contract (`InvokeStream` ends with `InvalidArgument` or `Unimplemented` after reading the first frame); the Wasm carrier is outside the scope of this SDK. Versions are released as plain tags, not `go/vN` ones (`v0.1.0`).
+
+Conformance (RFC-0024):
+
+- Pinned spec version: commit `386501f` (the `spec/` submodule and the conformance module in `go.mod`); the spec has no tag yet, and its first tag is planned as `v1.0.0-rc.1`.
+- Claimed profiles: `core`, `plugin` and `provider:caching.distributed@1`.
+- Gaps: none.
+
+Until there is a release pinned to a spec tag, the maturity is Experimental.
 
 ## Ecosystem
 
