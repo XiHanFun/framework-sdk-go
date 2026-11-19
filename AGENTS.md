@@ -41,6 +41,8 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 ├─ .claude/skills -> ../.agents/skills # Claude Code 技能兼容入口
 ├─ CLAUDE.md -> AGENTS.md              # Claude Code 仓库指令入口
 ├─ .github/workflows/ci.yml            # 门禁：生成物与规范一致、格式与静态检查、全部测试
+├─ .github/workflows/release.yml       # 发布：推送 v* 标签触发，核对后让模块代理收录
+├─ scripts/release-check.sh            # 发版核对：打标签之前与 release.yml 的 guard 都跑它
 ├─ spec/                               # 规范（XiHanFun/framework-spec 的 submodule）：RFC、约定、Schema、插件协议、向量与运行器
 ├─ buf.gen.yaml                        # 从 spec/plugin/plugin.proto 生成 plugin/v1
 ├─ go.mod / go.sum                     # 模块定义；钉一致性模块的版本
@@ -79,6 +81,7 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 | 全部门禁 | `buf generate && test -z "$(git status --porcelain -- plugin/v1)" && test -z "$(gofmt -l .)" && go vet ./... && go test ./...` |
 | 安装黑盒运行器 | `go install github.com/xihanfun/framework-spec/conformance/cmd/xihan-conformance@<go.mod 里一致性模块的版本>` |
 | 黑盒运行器 | `xihan-conformance plugin --dir <插件目录> --exclude echoes.crash --sample 'echoes.create={"text":"x"}'` |
+| 发版核对 | `bash scripts/release-check.sh vX.Y.Z main`（打标签之前跑，联网取 `origin/main` 与规范的远端标签） |
 
 国内拉依赖时在命令前加 `GOPROXY="https://goproxy.cn,direct" GOSUMDB="sum.golang.google.cn"`；`examples/echo`、`examples/cache` 的测试会按 `go.mod` 的版本 `go install` 运行器，另加 `GOPRIVATE=github.com/xihanfun/framework-spec`。
 
@@ -139,7 +142,8 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 
 ## 发布
 
-- 版本就是仓库的 git 标签：普通的 `vX.Y.Z` 标签，不带 `go/` 之类的目录前缀；没有单独的版本文件，模块路径在 `go.mod`。使用方经 Go 模块代理按标签取用，没有另外的注册表与发布工作流。
+- 版本就是仓库的 git 标签：普通的 `vX.Y.Z` 标签，不带 `go/` 之类的目录前缀；模块路径在 `go.mod`，`primitives/framework.go` 的 `SDKVersion`（握手上报的 SDK 版本）要与标签相同。使用方经 Go 模块代理按标签取用，没有另外的注册表。
+- 打标签之前跑 `bash scripts/release-check.sh vX.Y.Z main`（标签只从 `main` 发、标签号等于 `SDKVersion`、规范钉在标签上、一致性模块是标签版本）；推送 `v*` 标签触发 `.github/workflows/release.yml`，guard 用同一份脚本复核，通过后让模块代理收录；GitHub Release 与 XiHan.Framework 一样在标签推送后手动建。标签推上去就已发布，guard 只能报红、拦不住，步骤见 `version-release` 技能。
 - 规范的标签规则照 RFC-0024「实现钉规范」：发预发布或正式版时 `spec/` 子模块必须正好在规范标签上，`go.mod` 里的一致性模块必须是标签版本（规范同一提交上的 `conformance/vX.Y.Z` 标签），不能是伪版本；正式版只钉规范的正式版标签，预发布可以钉 rc 标签。
 - 打标签与推送标签用用户自己的权限，只在用户明确要求时执行。
 
@@ -148,6 +152,7 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 - 日常提交在 `dev`。
 - `main` 只在用户明确说「推送并快进 main」时由 `dev` 快进（`git fetch . dev:main`，不是快进就停下查）。
 - CI（`.github/workflows/ci.yml`）在 `main` 与 `dev` 的 push、目标为 `main` 或 `dev` 的 PR 上运行，也可以手动触发（`workflow_dispatch`）。
+- 发版工作流（`.github/workflows/release.yml`）只在推送 `v*` 标签、或手动运行时选中版本标签时运行，见「发布」与 `version-release` 技能。
 
 ## Git 与提交
 
