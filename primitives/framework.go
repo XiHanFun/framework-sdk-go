@@ -9,7 +9,7 @@ const (
 	// SDKName 是握手时上报的 SDK 名。
 	SDKName = "framework-sdk-go"
 	// SDKVersion 是本 SDK 的版本。
-	SDKVersion = "0.1.0"
+	SDKVersion = "0.2.0-rc.1"
 	// Repository 是 SDK 仓库地址。
 	Repository = "https://github.com/XiHanFun/framework-sdk-go"
 	// Documentation 是文档地址。
