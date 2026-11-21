@@ -11,8 +11,9 @@ import (
 // TestCancellationIsAttributedByTheDeadlineToken 核对 RFC-0004 / ADR-0092 的归因：只看截止令牌，不按谁先发生判断
 func TestCancellationIsAttributedByTheDeadlineToken(t *testing.T) {
 	// 调用方先取消、随后到了截止时间：截止令牌触发前报取消，触发后报超时（嵌入的 Err() 仍是 Canceled）
+	// 截止时间留够余量：慢的 CI 上从建上下文到核对就可能过了几十毫秒，截止令牌先触发就核对不到截止前的「报取消」
 	parent, cancel := context.WithCancel(context.Background())
-	ctx := invocation.New(parent, invocation.WithTimeout(40*time.Millisecond))
+	ctx := invocation.New(parent, invocation.WithTimeout(100*time.Millisecond))
 	cancel()
 	<-ctx.Done()
 	if err := ctx.Cancellation(); err == nil || err.Code != invocation.ErrorCodeCancelled || ctx.DeadlineExceeded() {

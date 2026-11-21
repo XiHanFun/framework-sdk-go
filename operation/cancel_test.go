@@ -25,7 +25,7 @@ func TestCancellationOnlyReachesHandlersThroughTheToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	timedOut := invoker.Invoke(invocation.Background(invocation.WithTimeout(10*time.Millisecond)), operation.Request{ID: "jobs.finish"})
+	timedOut := invoker.Invoke(invocation.Background(invocation.WithTimeout(inFlightDeadline)), operation.Request{ID: "jobs.finish"})
 	if !timedOut.Outcome.OK() || string(timedOut.Payload) != `{"value":2}` {
 		t.Errorf("a handler that returns after the deadline ends the call with its result: %v %s", timedOut.Outcome, timedOut.Payload)
 	}

@@ -89,7 +89,7 @@ func kernelErrors(t *testing.T) map[string]*primitives.Error {
 	record(newInvoker(t, skip).Invoke(invocation.Background(), operation.Request{ID: "orders.create"}).Outcome.Err())
 
 	waiting := waitingInvoker(t)
-	record(waiting.Invoke(invocation.Background(invocation.WithTimeout(10*time.Millisecond)), operation.Request{ID: "jobs.wait"}).Outcome.Err())
+	record(waiting.Invoke(invocation.Background(invocation.WithTimeout(inFlightDeadline)), operation.Request{ID: "jobs.wait"}).Outcome.Err())
 	parent, cancel := context.WithCancel(context.Background())
 	cancel()
 	record(invocation.New(parent).Cancellation())

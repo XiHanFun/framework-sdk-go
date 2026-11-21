@@ -39,6 +39,11 @@ func TestDeadlineBeforeStartStopsAtTheResilienceStage(t *testing.T) {
 	}
 }
 
+// inFlightDeadline 是要在处理器执行途中到达的截止时间：留够余量，保证调用在它之前进入 Resilience 阶段。慢的 CI（Linux 上还带
+// -race）上进入管道就可能超过 10 毫秒，截止时间先到会以 deadline_before_start 结束、到不了处理器；处理器等令牌触发再往下走，
+// 截止时间一定在执行途中到达
+const inFlightDeadline = 100 * time.Millisecond
+
 // waitingInvoker 登记 jobs.wait：等上下文结束，然后按 RFC-0004 的做法写下取消结果，交给调用器归因
 func waitingInvoker(t *testing.T) *operation.Invoker {
 	t.Helper()
@@ -61,7 +66,7 @@ func waitingInvoker(t *testing.T) *operation.Invoker {
 func TestDownstreamCancellationIsRewrittenOnceTheDeadlineFired(t *testing.T) {
 	invoker := waitingInvoker(t)
 
-	timedOut := invoker.Invoke(invocation.Background(invocation.WithTimeout(20*time.Millisecond)), operation.Request{ID: "jobs.wait"})
+	timedOut := invoker.Invoke(invocation.Background(invocation.WithTimeout(inFlightDeadline)), operation.Request{ID: "jobs.wait"})
 	assertError(t, timedOut.Outcome.Err(), "KERNEL_TIMEOUT_001", "kernel.invocation.deadline_exceeded", nil, "The invocation exceeded its deadline.")
 
 	parent, cancel := context.WithCancel(context.Background())
