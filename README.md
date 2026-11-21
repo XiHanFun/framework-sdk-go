@@ -96,7 +96,7 @@ The documentation site is in Chinese.
 
 ## Status
 
-Claimed conformance profiles (RFC-0024): `core`, `plugin` and `provider:caching.distributed@1`, with no gaps; the pinned spec version is the one in the `spec/` submodule and the conformance module in `go.mod`. Until there is a release pinned to a spec tag, the maturity is Experimental; streaming operations and the Wasm carrier are out of scope. Details are in [Conformance](https://framework.docs.xihanfun.com/sdks/go#一致性) in the docs.
+Claimed conformance profiles (RFC-0024): `core`, `plugin` and `provider:caching.distributed@1`, with no gaps; the pinned spec version is the one in the `spec/` submodule and the conformance module in `go.mod`. The maturity is Experimental: there is a prerelease pinned to a spec rc tag, and Stable also needs a release pinned to a formal spec tag; streaming operations and the Wasm carrier are out of scope. Details are in [Conformance](https://framework.docs.xihanfun.com/sdks/go#一致性) in the docs.
 
 ## Ecosystem
 

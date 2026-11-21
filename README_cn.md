@@ -94,7 +94,7 @@ func main() {
 
 ## 状态
 
-认领的一致性档（RFC-0024）：`core`、`plugin` 与 `provider:caching.distributed@1`，没有缺口；钉的规范版本见 `spec/` 子模块与 `go.mod` 里的一致性模块。在有钉在规范标签上的发布版之前，成熟度是 Experimental；流式操作与 Wasm 载体不在范围内。细节见文档的[一致性](https://framework.docs.xihanfun.com/sdks/go#一致性)。
+认领的一致性档（RFC-0024）：`core`、`plugin` 与 `provider:caching.distributed@1`，没有缺口；钉的规范版本见 `spec/` 子模块与 `go.mod` 里的一致性模块。成熟度是 Experimental：已有钉在规范 rc 标签上的预发布版，到 Stable 还要钉在规范正式版标签上的发布版；流式操作与 Wasm 载体不在范围内。细节见文档的[一致性](https://framework.docs.xihanfun.com/sdks/go#一致性)。
 
 ## 生态
 

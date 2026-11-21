@@ -32,4 +32,4 @@ description: 设计、实现、审查或诊断 framework-sdk-go 的 caching 包�
 
 1. `go test ./caching/...`：`TestOperationsReplayTheVectors` 回放向量，其余用例覆盖过期、滑动、原子操作、批量与容量。
 2. `go test ./examples/cache/...`：用 `go.mod` 版本的黑盒运行器跑协议层全部用例，只有 `event`（没有订阅）是名单内的跳过。
-3. 操作集的行为变化还要在 XiHan.Framework 里验证：`framework/samples/CacheGoPlugin` 的 `go.mod` 以伪版本锁定本 SDK 的提交，用 `go get github.com/xihanfun/framework-sdk-go@<提交或标签>` 升级后跑 `XiHan.Framework.Caching.Remote.Tests`（`RemoteCacheStoreConformanceTests` 让适配器加插件跑完整套 `Caching.Conformance`）。那是另一个仓库，本 SDK 的提交推送之后才能升级，单独提交。
+3. 操作集的行为变化还要在 XiHan.Framework 里验证：`framework/samples/CacheGoPlugin` 的 `go.mod` 锁定本 SDK 的版本，用 `go get github.com/xihanfun/framework-sdk-go@<提交或标签>` 升级后跑 `XiHan.Framework.Caching.Remote.Tests`（`RemoteCacheStoreConformanceTests` 让适配器加插件跑完整套 `Caching.Conformance`）。那是另一个仓库，本 SDK 的提交推送之后才能升级，单独提交。
