@@ -5,8 +5,8 @@
 | 步骤 | 内容 | 失败时 |
 | --- | --- | --- |
 | 检出 | 带 submodule（`submodules: true`） | 本地先 `git submodule update --init` |
-| 安装 Go | `go-version-file: go.mod` | 本机 Go 低于 `go.mod` 的 `go` 指令时升级 |
-| 安装 buf 与生成器（只在 `ubuntu-latest`） | 三条 `go install`，版本写在 ci.yml | 本机照同样的版本安装 |
+| 安装 Go | `go-version-file: go.mod`（指令带补丁号如 `1.26.0` 时装的就是那一版；升依赖让 `go mod tidy` 改了 `go` 指令时，CI 的工具链随之变） | 本机 Go 低于 `go.mod` 的 `go` 指令时升级 |
+| 安装 buf 与生成器（只在 `ubuntu-latest`） | 三条 `go install`，版本写在 ci.yml；这一步与 staticcheck 设 `GOTOOLCHAIN=auto`，工具按各自要求的工具链编译 | 本机照同样的版本安装；工具要求的 Go 高于 `go` 指令时不要为它去抬 `go` 指令 |
 | 生成物与规范一致（只在 `ubuntu-latest`） | `buf generate` 后 `git status --porcelain -- plugin/v1` 必须为空（改动、删除与新增的未跟踪文件都算） | 提交重新生成的 `plugin/v1`，不手改 |
 | 格式与静态检查 | `test -z "$(gofmt -l .)"`、`go vet ./...` | `gofmt -w <文件>`；按 vet 的提示改代码 |
 | staticcheck（只在 `ubuntu-latest`） | `go install` 钉死的版本后 `staticcheck ./...` | 按提示改代码（未使用的代码删掉，不加忽略指令绕过）；本机照 ci.yml 的版本安装 |

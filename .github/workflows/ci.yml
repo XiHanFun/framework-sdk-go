@@ -34,8 +34,12 @@ jobs:
           go-version-file: go.mod
 
       # 生成物只取决于 plugin.proto 与生成器的版本，与操作系统无关：只在 ubuntu 上核对，Windows 任务不必编译 buf
+      # 工具按它们自己要求的工具链编译：go.mod 的 go 指令带补丁号时 setup-go 装的就是那一版（下限），并把 GOTOOLCHAIN 设成 local，
+      # 钉死的 buf 要更高的补丁版本就装不上；这里放开成 auto，测试仍跑在 go 指令那一版上
       - name: 安装 buf 与生成器
         if: matrix.os == 'ubuntu-latest'
+        env:
+          GOTOOLCHAIN: auto
         run: |
           go install github.com/bufbuild/buf/cmd/buf@v1.75.0
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
@@ -63,6 +67,9 @@ jobs:
       # 版本钉死：新版本会带来新的检查项，升级时先在本机跑通再改这里。只在 ubuntu 上跑，*_windows.go 靠本机核对
       - name: staticcheck
         if: matrix.os == 'ubuntu-latest'
+        # 与生成器同理：工具按自己要求的工具链编译，检查的仍是 go 指令那一版下的代码
+        env:
+          GOTOOLCHAIN: auto
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
           staticcheck ./...

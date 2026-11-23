@@ -10,7 +10,7 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 
 | 技术 | 要求 | 用途 |
 | --- | --- | --- |
-| Go | `go.mod` 的 `go` 指令（CI 以 `go-version-file: go.mod` 安装） | 编译、测试与运行器 |
+| Go | `go.mod` 的 `go` 指令（CI 以 `go-version-file: go.mod` 安装；指令带补丁号时装的就是那一版，不是该次版本的最新补丁） | 编译、测试与运行器 |
 | gRPC 与 protobuf | `google.golang.org/grpc`、`google.golang.org/protobuf`，以 `go.mod` 为准 | 插件协议 `xihan.plugin.v1` |
 | go-winio | `github.com/Microsoft/go-winio`，以 `go.mod` 为准 | Windows 命名管道的监听与回调 |
 | 一致性模块 | `github.com/xihanfun/framework-spec/conformance`，`go.mod` 钉的版本与 `spec/` 子模块是同一个规范提交 | 内嵌的向量与档表、规范规则 `rules`、黑盒运行器 `xihan-conformance` |
