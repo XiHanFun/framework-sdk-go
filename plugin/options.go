@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/xihanfun/framework-sdk-go/invocation"
@@ -217,8 +218,12 @@ type Options struct {
 	Stdin io.Reader
 	// Stdout 只用于写握手行。空为 os.Stdout。
 	Stdout io.Writer
-	// Stderr 接收运行时日志（JSON 行）。空为 os.Stderr。
+	// Stderr 接收运行时日志（JSON 行）。空为 os.Stderr。给了 Logger 时不用它。
 	Stderr io.Writer
+	// Logger 是运行时的日志器：运行时自己的日志（加上属性 plugin）与调用器的日志（操作 panic 的值与堆栈、响应写不出的原因）都写进它。
+	// 空时自建一个把 JSON 行写到 Stderr 的（NewLogHandler，级别 Info）。自己给的要让宿主读得懂，用 NewLogHandler 做处理器、写到进程的 stderr
+	// （invocation.md §6）；处理器里的操作日志想进同一处就用同一个日志器。
+	Logger *slog.Logger
 	// Getenv 读取环境变量；空为 os.Getenv。
 	Getenv func(string) string
 }

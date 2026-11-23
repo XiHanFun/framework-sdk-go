@@ -28,9 +28,10 @@ var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // Serve 以进程外插件的身份运行：核对清单与声明、读环境变量、选回调端点、监听、写握手行，然后服务到 Stop 完成、stdin 读到结尾、
 // 收到 SIGTERM 或 ctx 结束（后三者按 lifecycle.md §7.7 收尾，最多 3 秒）；这些情况都返回 nil，进程以退出码 0 退出。
-// 清单与声明不合（handshake.md §1 末段）或环境变量缺失时不监听、不写握手行，在 stderr 记一条 error 日志并返回 FrameworkError
+// 清单与声明不合（handshake.md §1 末段）或环境变量缺失时不监听、不写握手行，记一条 error 日志并返回 FrameworkError
 // （清单读不出时是 manifest.Read 的 *primitives.Error）。XIHAN_PLUGIN_HOST_ADDRESS 缺失、不合法或没有能连的项时照常服务，
-// 记一条 warning，回调以 plugins.host.unavailable 失败。
+// 记一条 warning，回调以 plugins.host.unavailable 失败。日志写进 Options.Logger，没给时是写到 Stderr 的 JSON 行；
+// 调用器用的是同一个日志器，操作 panic 与响应写不出的原因也在那里。
 func Serve(ctx context.Context, opts Options) error {
 	if opts.Stdin == nil {
 		opts.Stdin = os.Stdin
@@ -47,7 +48,11 @@ func Serve(ctx context.Context, opts Options) error {
 	if opts.Operations == nil {
 		opts.Operations = operation.NewRegistry()
 	}
-	logger := slog.New(NewLogHandler(opts.Stderr, slog.LevelInfo))
+	// 运行时的日志器：作者给了就用它，否则自建写到 Stderr 的 JSON 行（invocation.md §6）
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.New(NewLogHandler(opts.Stderr, slog.LevelInfo))
+	}
 	refuse := func(err error) error {
 		logger.Error("the plugin refused to start", "error", err.Error())
 		return err
@@ -72,7 +77,8 @@ func Serve(ctx context.Context, opts Options) error {
 	if session == "" {
 		return refuse(configurationError("%s is required", EnvSession))
 	}
-	invoker, err := operation.NewInvoker(opts.Operations, opts.Pipeline)
+	// 调用器用运行时的日志器：操作 panic 与响应写不出的原因只进日志，要进宿主读得到的那一份，不进 slog.Default
+	invoker, err := operation.NewInvoker(opts.Operations, opts.Pipeline, operation.WithLogger(logger))
 	if err != nil {
 		return refuse(err)
 	}

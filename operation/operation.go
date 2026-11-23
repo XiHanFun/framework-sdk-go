@@ -162,7 +162,7 @@ type Descriptor struct {
 }
 
 // Execute 解码载荷、执行、编码响应，不经管道：解码失败返回 KERNEL_VALIDATION_001，响应写不出返回 KERNEL_UNEXPECTED_001
-// （kernel.invocation.unhandled_exception），与 Invoker.Invoke 的编码相同
+// （kernel.invocation.unhandled_exception），与 Invoker.Invoke 的编码相同；不经调用器，所以写不出的原因记进 slog.Default
 func (d *Descriptor) Execute(ctx *invocation.Context, payload []byte) Response {
 	request, err := d.decode(payload)
 	if err != nil {
@@ -172,7 +172,7 @@ func (d *Descriptor) Execute(ctx *invocation.Context, payload []byte) Response {
 	if !outcome.OK() {
 		return Response{Outcome: outcome}
 	}
-	encoded, failure := encodeResponse(ctx, d.Contract.ID, response)
+	encoded, failure := encodeResponse(slog.Default(), ctx, d.Contract.ID, response)
 	if failure != nil {
 		return Response{Outcome: primitives.Fail[primitives.Unit](failure)}
 	}
@@ -181,10 +181,10 @@ func (d *Descriptor) Execute(ctx *invocation.Context, payload []byte) Response {
 
 // encodeResponse 把响应对象编码成载荷（RFC-0011 规则 10「编码」，ADR-0236）：按响应类型用 encoding/json 写出，类型化的浮点成员是 NaN 或
 // 无穷、或有序列化不支持的值时写不出，不写成 null 或字符串，以 KERNEL_UNEXPECTED_001 + kernel.invocation.unhandled_exception 结束；
-// 原因是框架错误（MarshalJSON 返回或 panic 的 FrameworkError）时它的错误放进 inner。原因只写进日志，不交给调用方
-func encodeResponse(ctx *invocation.Context, id string, response any) (encoded []byte, failure *primitives.Error) {
+// 原因是框架错误（MarshalJSON 返回或 panic 的 FrameworkError）时它的错误放进 inner。原因只写进 logger，不交给调用方
+func encodeResponse(logger *slog.Logger, ctx *invocation.Context, id string, response any) (encoded []byte, failure *primitives.Error) {
 	fail := func(cause any) {
-		slog.Default().Error("the response of an operation could not be encoded", "operation", id, "traceId", ctx.TraceID(), "error", fmt.Sprint(cause))
+		logger.Error("the response of an operation could not be encoded", "operation", id, "traceId", ctx.TraceID(), "error", fmt.Sprint(cause))
 		encoded, failure = nil, UnhandledException(cause)
 	}
 	defer func() {
@@ -360,6 +360,25 @@ type Invoker struct {
 	registry *Registry
 	step     pipeline.Step
 	pipeline *pipeline.Builder
+	// logger 是 WithLogger 给的日志器；为 nil 时每次写日志取当时的 slog.Default
+	logger *slog.Logger
+}
+
+// InvokerOption 配置 NewInvoker 构建的调用器。
+type InvokerOption func(*Invoker)
+
+// WithLogger 指定调用器的日志器：操作 panic 的值与堆栈、响应写不出的原因只写进日志、不进错误（RFC-0011 规则 5），写的就是它。
+// 不给或给 nil 时用 slog.Default；插件运行时把自己的日志器（Options.Logger，缺省是写到 stderr 的 JSON 行）传进来，宿主才读得到这些原因
+func WithLogger(logger *slog.Logger) InvokerOption {
+	return func(i *Invoker) { i.logger = logger }
+}
+
+// log 返回调用器此刻的日志器
+func (i *Invoker) log() *slog.Logger {
+	if i.logger != nil {
+		return i.logger
+	}
+	return slog.Default()
 }
 
 // 调用器的三个内置步骤（RFC-0011 规则 10，ADR-0236）：名字与 .NET 的内置中间件相同，都按归属 xihan.kernel.core 放在所在阶段的
@@ -374,20 +393,25 @@ const (
 )
 
 // NewInvoker 用登记表与管道构建调用器：在管道的副本里加上三个内置步骤（builder 本身不变），终点在 handle 阶段之后分派当前操作。
-// builder 里已有同名的中间件时 panic（RFC-0004 规则 8）
-func NewInvoker(registry *Registry, builder *pipeline.Builder) (*Invoker, error) {
+// builder 里已有同名的中间件时 panic（RFC-0004 规则 8）。options 可选，目前只有 WithLogger
+func NewInvoker(registry *Registry, builder *pipeline.Builder, options ...InvokerOption) (*Invoker, error) {
 	if builder == nil {
 		builder = pipeline.NewBuilder()
 	}
+	invoker := &Invoker{registry: registry}
+	for _, option := range options {
+		option(invoker)
+	}
 	composed := builder.Clone().
-		UseAt(pipeline.Func(ObserveMiddleware, observe), primitives.Observe, pipeline.Beginning, pipeline.KernelOwner).
+		UseAt(pipeline.Func(ObserveMiddleware, invoker.observe), primitives.Observe, pipeline.Beginning, pipeline.KernelOwner).
 		UseAt(pipeline.Func(DeadlineMiddleware, deadline), primitives.Resilience, pipeline.Beginning, pipeline.KernelOwner).
 		UseAt(pipeline.Func(ValidationMiddleware, validation), primitives.Validate, pipeline.Beginning, pipeline.KernelOwner)
 	step, err := composed.Build(dispatch)
 	if err != nil {
 		return nil, err
 	}
-	return &Invoker{registry: registry, step: step, pipeline: composed}, nil
+	invoker.step, invoker.pipeline = step, composed
+	return invoker, nil
 }
 
 // Pipeline 返回调用器实际执行的管道（含三个内置步骤）的描述，供 xihan pipeline dump 这类诊断
@@ -422,7 +446,7 @@ func (i *Invoker) Invoke(ctx *invocation.Context, request Request) Response {
 		return Response{Outcome: primitives.Fail[primitives.Unit](noResponse(request.ID))}
 	}
 	// 管道结束之后才编码（RFC-0011 规则 10「编码」）：写不出时以 unhandled_exception 结束、没有载荷，不抛给调用方
-	encoded, failure := encodeResponse(ctx, request.ID, state.response)
+	encoded, failure := encodeResponse(i.log(), ctx, request.ID, state.response)
 	if failure != nil {
 		return Response{Outcome: primitives.Fail[primitives.Unit](failure)}
 	}
@@ -476,9 +500,9 @@ func Invoke[Req, Res any](invoker *Invoker, ctx *invocation.Context, id string, 
 
 // observe 是 Observe 阶段的内置步骤：把排在它之后的中间件与处理器的 panic 翻译为 KERNEL_UNEXPECTED_001（kernel.invocation.unhandled_exception，
 // 没有参数），与 .NET 的 ObserveMiddleware 一致（RFC-0011 规则 5、规则 10）；panic 的值是 FrameworkError 时作为内部错误带上。
-// panic 的值与堆栈只写进日志（slog.Default，插件进程里是 stderr），不进错误。排在它之前的（Ingress 阶段，或 Observe 阶段 Beginning 上
+// panic 的值与堆栈只写进调用器的日志（WithLogger 给的，缺省 slog.Default），不进错误。排在它之前的（Ingress 阶段，或 Observe 阶段 Beginning 上
 // 归属排在 xihan.kernel.core 之前的）panic 原样交给调用方
-func observe(ctx *invocation.Context, next pipeline.Step) (outcome primitives.Result[primitives.Unit]) {
+func (i *Invoker) observe(ctx *invocation.Context, next pipeline.Step) (outcome primitives.Result[primitives.Unit]) {
 	defer func() {
 		recovered := recover()
 		if recovered == nil {
@@ -488,7 +512,7 @@ func observe(ctx *invocation.Context, next pipeline.Step) (outcome primitives.Re
 		if state, ok := current(ctx); ok {
 			id = state.descriptor.Contract.ID
 		}
-		slog.Default().Error("an operation panicked", "operation", id, "traceId", ctx.TraceID(), "panic", fmt.Sprint(recovered), "stack", string(debug.Stack()))
+		i.log().Error("an operation panicked", "operation", id, "traceId", ctx.TraceID(), "panic", fmt.Sprint(recovered), "stack", string(debug.Stack()))
 		outcome = primitives.Fail[primitives.Unit](UnhandledException(recovered))
 	}()
 	return next(ctx)

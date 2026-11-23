@@ -66,6 +66,8 @@ type settings struct {
 
 // state 是插件的运行状态。
 type state struct {
+	// logger 是插件与运行时共用的日志器
+	logger   *slog.Logger
 	mu       sync.Mutex
 	greeting string
 	events   []string
@@ -79,7 +81,10 @@ func Options() (plugin.Options, error) {
 	}
 	primitives.SetDefaultMessages(catalog.Resolver(), "en-US")
 
-	s := &state{}
+	// 插件自己的日志与运行时、调用器的日志进同一个日志器（Options.Logger）：写到 stderr 的 JSON 行，宿主逐行读（invocation.md §6）。
+	// 不用 slog.Default：它的文本行宿主读不出级别与字段
+	logger := slog.New(plugin.NewLogHandler(os.Stderr, slog.LevelInfo))
+	s := &state{logger: logger}
 	registry := operation.NewRegistry()
 	if err := operation.Add(registry, operation.Contract{ID: "echoes.create", Stability: primitives.Experimental, Expose: []string{operation.ExposeHTTP, operation.ExposeMcp}}, operation.HandlerFunc[CreateRequest, CreateResponse](s.create), &operation.Schema{
 		Request:  `{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}`,
@@ -109,6 +114,7 @@ func Options() (plugin.Options, error) {
 			Configure: s.configure,
 			Health:    s.health,
 		},
+		Logger: logger,
 	}, nil
 }
 
@@ -168,7 +174,7 @@ func (s *state) relay(ctx *invocation.Context, request RelayRequest) primitives.
 
 // crash 故意让进程异常退出而不应答：宿主应记为崩溃并按退避重启。
 func (s *state) crash(*invocation.Context, struct{}) primitives.Result[struct{}] {
-	slog.Default().Error("crashing on request")
+	s.logger.Error("crashing on request")
 	os.Exit(3)
 	return primitives.Ok(struct{}{})
 }
