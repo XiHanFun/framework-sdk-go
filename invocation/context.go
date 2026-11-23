@@ -264,6 +264,23 @@ func (c *Context) WithoutUnregisteredBaggage() *Context {
 	return &derived
 }
 
+// WithContext 派生一个换了底层 context.Context 的上下文（用法同 http.Request.WithContext）：取消与 Value 改看 ctx，追踪、Baggage、
+// 对象袋与截止令牌同原来的上下文共享，原来的上下文不变。ctx 通常由本上下文派生（context.WithValue、WithCancel、WithTimeout），
+// 这样调用的取消照样传得到它。截止时间取两者中较早的：ctx 自己的截止时间比这次调用的更早（或调用没有截止时间）时就是它，
+// 到了按超时归因；更晚的不放宽调用的截止时间。ctx 为 nil 是编程错误，panic FrameworkError（PRIMITIVES_VALIDATION_001）
+func (c *Context) WithContext(ctx context.Context) *Context {
+	if ctx == nil {
+		panic(primitives.NewFrameworkError(primitives.ErrorCodeInvalidArgument, "The context must not be nil."))
+	}
+	derived := *c
+	derived.Context = ctx
+	// Deadline、RemainingTime 等读的是 deadline 字段：ctx 更早的截止时间记进来，它们才与 Done 关闭的时刻一致
+	if deadline, ok := ctx.Deadline(); ok && (c.deadline.IsZero() || deadline.Before(c.deadline)) {
+		derived.deadline = deadline.UTC()
+	}
+	return &derived
+}
+
 // Tenant 返回当前租户 ID；没有为空。
 func (c *Context) Tenant() string { return c.baggage[primitives.BaggageTenant] }
 
