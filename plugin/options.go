@@ -120,7 +120,31 @@ type Envelope struct {
 
 // EventHandler 处理一条投递的消息；返回失败由宿主的消息代理按重试与死信策略处理，处理器必须幂等。
 // 一次投递匹配多个订阅时按声明顺序依次交给各自的处理器，第一个失败即结果；处理器 panic 为 KERNEL_UNEXPECTED_001（invocation.md §4）。
+// 这次投递的订阅方式不在参数里，用 EventDeliveryOf(ctx) 取。
 type EventHandler func(ctx *invocation.Context, envelope Envelope, attempt uint32) primitives.Result[primitives.Unit]
+
+// EventDelivery 是一次投递的附加信息（HandleEventRequest 的 attempt 与 mode，invocation.md §4）。
+type EventDelivery struct {
+	// Attempt 是投递次数，从 1 起；与处理器的 attempt 参数相同。
+	Attempt uint32
+	// Mode 是这次投递的订阅方式：SubscriptionModeCompeting 或 SubscriptionModeBroadcast，宿主写空时是 competing。
+	// 同一个处理器函数配给两种方式的订阅时靠它分辨：广播投递尽力而为、不进死信、不回放历史（RFC-0009「订阅方式」）。
+	Mode SubscriptionMode
+}
+
+// deliveryKey 是调用上下文对象袋里放 EventDelivery 的键。
+type deliveryKey struct{}
+
+// EventDeliveryOf 从调用上下文取这次投递的附加信息：运行时在每次投递的上下文里放入它，事件处理器收到的上下文及其派生上下文上都取得到；
+// 操作调用的上下文与不是运行时建的上下文上为假。
+func EventDeliveryOf(ctx *invocation.Context) (EventDelivery, bool) {
+	value, ok := ctx.Get(deliveryKey{})
+	if !ok {
+		return EventDelivery{}, false
+	}
+	delivery, ok := value.(EventDelivery)
+	return delivery, ok
+}
 
 // SubscriptionHandler 把订阅与处理器配对。
 type SubscriptionHandler struct {

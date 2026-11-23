@@ -360,6 +360,8 @@ func (s *service) HandleEvent(ctx context.Context, request *pluginv1.HandleEvent
 		return &pluginv1.HandleEventResponse{Status: ToStatus(r.unavailable(state))}, nil
 	}
 	defer leave()
+	// 处理器的签名里没有投递的方式：放进上下文，处理器用 EventDeliveryOf 取；空方式同 competing
+	invocationCtx.Set(deliveryKey{}, EventDelivery{Attempt: request.Attempt, Mode: mode.orCompeting()})
 	for _, handler := range handlers {
 		if outcome := r.deliver(invocationCtx, handler, envelope, request.Attempt); !outcome.OK() {
 			return &pluginv1.HandleEventResponse{Status: ToStatus(outcome)}, nil
