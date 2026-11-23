@@ -9,9 +9,10 @@
 | 安装 buf 与生成器（只在 `ubuntu-latest`） | 三条 `go install`，版本写在 ci.yml | 本机照同样的版本安装 |
 | 生成物与规范一致（只在 `ubuntu-latest`） | `buf generate` 后 `git status --porcelain -- plugin/v1` 必须为空（改动、删除与新增的未跟踪文件都算） | 提交重新生成的 `plugin/v1`，不手改 |
 | 格式与静态检查 | `test -z "$(gofmt -l .)"`、`go vet ./...` | `gofmt -w <文件>`；按 vet 的提示改代码 |
+| staticcheck（只在 `ubuntu-latest`） | `go install` 钉死的版本后 `staticcheck ./...` | 按提示改代码（未使用的代码删掉，不加忽略指令绕过）；本机照 ci.yml 的版本安装 |
 | 测试 | `go test ./...`，Linux 上加 `-race`（需要 cgo），Windows 上不带 | 修代码或补测试 |
 
-矩阵是 `ubuntu-latest` 与 `windows-latest`；生成物只取决于 `plugin.proto` 与生成器的版本，前两步只在 `ubuntu-latest` 上跑，Windows 任务不编译 buf。触发条件是 `main`、`dev` 的 push，目标为 `main`、`dev` 的 PR，以及手动触发。
+矩阵是 `ubuntu-latest` 与 `windows-latest`；生成物只取决于 `plugin.proto` 与生成器的版本，安装 buf 与生成物检查只在 `ubuntu-latest` 上跑，Windows 任务不编译 buf；staticcheck 也只在 `ubuntu-latest` 上跑。触发条件是 `main`、`dev` 的 push，目标为 `main`、`dev` 的 PR，以及手动触发。
 
 ## 运行器测试
 

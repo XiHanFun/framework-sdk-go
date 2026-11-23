@@ -12,10 +12,8 @@ import (
 	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
 )
 
-var (
-	unmarshalerType     = reflect.TypeFor[json.Unmarshaler]()
-	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
-)
+// textUnmarshalerType 是 encoding.TextUnmarshaler 的类型：映射的键实现了它时交给它解码
+var textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
 
 // Problem 是解码不合请求类型的第一处
 type Problem struct {

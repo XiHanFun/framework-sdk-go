@@ -150,7 +150,7 @@ type pathError struct{}
 func (pathError) Error() string { return "C:\\secret\\connection-string" }
 
 // genericError 是带类型参数的错误：类型名里的实参带完整的包路径，reason 只取简单名。
-type genericError[T any] struct{ value T }
+type genericError[T any] struct{ _ T }
 
 // Error 实现 error。
 func (e *genericError[T]) Error() string { return "generic" }

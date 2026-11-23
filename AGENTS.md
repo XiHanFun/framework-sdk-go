@@ -16,7 +16,8 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 | 一致性模块 | `github.com/xihanfun/framework-spec/conformance`，`go.mod` 钉的版本与 `spec/` 子模块是同一个规范提交 | 内嵌的向量与档表、规范规则 `rules`、黑盒运行器 `xihan-conformance` |
 | buf、protoc-gen-go、protoc-gen-go-grpc | 版本以 `.github/workflows/ci.yml` 为准 | 从 `spec/plugin/plugin.proto` 生成 `plugin/v1` |
 | gofmt、go vet | Go 工具链自带 | 格式与静态检查 |
-| GitHub Actions | `ubuntu-latest` 与 `windows-latest` 矩阵；安装 buf 与生成物检查两步只在 `ubuntu-latest` 上跑 | CI 门禁 |
+| staticcheck | 版本以 `.github/workflows/ci.yml` 为准 | 静态检查（未使用的代码、可疑写法等） |
+| GitHub Actions | `ubuntu-latest` 与 `windows-latest` 矩阵；安装 buf、生成物检查与 staticcheck 只在 `ubuntu-latest` 上跑 | CI 门禁 |
 
 ## 开始前必须做
 
@@ -40,7 +41,7 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 ├─ .agents/skills/                     # 按开发、插件运行时、远程 Provider、测试与发布分类的仓库技能
 ├─ .claude/skills -> ../.agents/skills # Claude Code 技能兼容入口
 ├─ CLAUDE.md -> AGENTS.md              # Claude Code 仓库指令入口
-├─ .github/workflows/ci.yml            # 门禁：生成物与规范一致（只在 ubuntu 上）、格式与静态检查、全部测试
+├─ .github/workflows/ci.yml            # 门禁：生成物与规范一致（只在 ubuntu 上）、格式与静态检查（gofmt、go vet、staticcheck）、全部测试
 ├─ .github/workflows/release.yml       # 发布：推送 v* 标签触发，核对后让模块代理收录
 ├─ scripts/release-check.sh            # 发版核对：打标签之前与 release.yml 的 guard 都跑它
 ├─ spec/                               # 规范（XiHanFun/framework-spec 的 submodule）：RFC、约定、Schema、插件协议、向量与运行器
@@ -76,9 +77,9 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 | 生成协议代码 | `buf generate`（改了 `spec/plugin/plugin.proto` 或升了规范指针之后） |
 | 生成物检查 | `buf generate` 后 `git status --porcelain -- plugin/v1` 输出为空 |
 | 格式 | `gofmt -l .` 输出为空 |
-| 静态检查 | `go vet ./...` |
+| 静态检查 | `go vet ./...` 与 `staticcheck ./...`（照 `ci.yml`「staticcheck」一步的版本 `go install`） |
 | 测试 | `go test ./...`（Linux 上 CI 加 `-race`，它需要 cgo） |
-| 全部门禁 | `buf generate && test -z "$(git status --porcelain -- plugin/v1)" && test -z "$(gofmt -l .)" && go vet ./... && go test ./...` |
+| 全部门禁 | `buf generate && test -z "$(git status --porcelain -- plugin/v1)" && test -z "$(gofmt -l .)" && go vet ./... && staticcheck ./... && go test ./...` |
 | 安装黑盒运行器 | `go install github.com/xihanfun/framework-spec/conformance/cmd/xihan-conformance@<go.mod 里一致性模块的版本>` |
 | 黑盒运行器 | `xihan-conformance plugin --dir <插件目录> --exclude echoes.crash --sample 'echoes.create={"text":"x"}'` |
 | 发版核对 | `bash scripts/release-check.sh vX.Y.Z main`（打标签之前跑，联网取 `origin/main` 与规范的远端标签） |
@@ -114,7 +115,7 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 
 ## 代码规范
 
-- 格式与静态检查只有 `gofmt` 与 `go vet`（CI 必过），没有另外的 lint 工具；`.editorconfig` 规定 UTF-8、LF、末尾换行，Go 用 tab，其余缩进两个空格；`.gitattributes` 统一 LF，`*.pb.go` 标为生成物。
+- 格式与静态检查是 `gofmt`、`go vet` 与 `staticcheck`（CI 必过；staticcheck 只在 ubuntu 上跑，改了 `*_windows.go` 在本机跑一遍），没有另外的 lint 工具；`.editorconfig` 规定 UTF-8、LF、末尾换行，Go 用 tab，其余缩进两个空格；`.gitattributes` 统一 LF，`*.pb.go` 标为生成物。
 - 文档注释与 `//` 注释用中文：导出与未导出的标识符都写文档注释，以标识符开头，一句说清它是什么，常在括号里注明对应的规范章节与 ADR（如「（RFC-0001「空白字符」，ADR-0245）」）；方法内的 `//` 注释说明为什么（判定顺序、平台差异、并发与时限），不复述代码。
 - 运行时英文：`FrameworkError` 的 `Message`、`reason` 的固定文本、测试的断言与失败信息用英文，句子以句号结尾，标识符用单引号。
 - 可恢复的失败返回 `*primitives.Error` 或 `primitives.Result[T]`（`primitives.Fail`、`Validation`、`NotFound` 等工厂），不 panic；编程错误（错误码、消息键、ID 不合法，管道重复登记等）panic `*primitives.FrameworkError`。错误码按 `<领域大写>_<KIND>_<NNN>`，登记在 `spec/conventions/error-codes.md`。
@@ -131,7 +132,7 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 - 向量回放：回放测试读一致性模块的类型化入口，命名如 `TestXxxFollowsTheVectors`，新回放的文件加进 `vectors_test.go` 的 `replayedVectors` 并注明测试名。
 - 插件运行时用黑盒运行器跑全部用例：`examples/echo`、`examples/cache` 的测试构建插件、按 `go.mod` 的版本安装运行器并以独立进程运行它，用例序列必须等于运行器的全集，名单外的跳过算失败；CI 在 Linux 与 Windows 上都跑。
 - 修复缺陷先写能复现问题的测试，再改实现。
-- 不删除测试、不放宽门禁（生成物检查、`gofmt`、`go vet`、`-race`、向量覆盖）来通过。
+- 不删除测试、不放宽门禁（生成物检查、`gofmt`、`go vet`、`staticcheck`、`-race`、向量覆盖）来通过。
 
 ## 文档
 

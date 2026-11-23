@@ -32,12 +32,6 @@ func (l *lifecycle) current() (primitives.LifecycleState, *primitives.Error) {
 	return l.state, l.err
 }
 
-// is 判断是否处于给定状态之一。
-func (l *lifecycle) is(states ...primitives.LifecycleState) bool {
-	current, _ := l.current()
-	return slices.Contains(states, current)
-}
-
 // claim 按 lifecycle.md §7.1 的次序表认领一次性的 RPC：当前状态在 accepted 里、这一步没有开始过时记下并返回真。
 // 状态与认领在同一把锁里判定，并发的两次 Configure 只有一次能进去；配置回调执行期间状态仍是 Resolved，只看状态拦不住第二次
 func (l *lifecycle) claim(step string, accepted ...primitives.LifecycleState) bool {

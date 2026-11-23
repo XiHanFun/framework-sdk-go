@@ -151,7 +151,7 @@ func TestFreeTextIsNeitherEmptyNorWhitespace(t *testing.T) {
 		assertInvalidArgument(t, fmt.Sprintf("Literal(%q)", text), func() { primitives.Literal("ORDERS_UNEXPECTED_001", text, nil, nil) })
 		assertInvalidArgument(t, fmt.Sprintf("WithText(%q)", text), func() { keyed.WithText(text) })
 	}
-	for _, text := range []string{"\u001c", "​", "\u001c\u001d\u001e\u001f", " boom\t"} {
+	for _, text := range []string{"\u001c", "\u200b", "\u001c\u001d\u001e\u001f", " boom\t"} {
 		if got := primitives.Literal("ORDERS_UNEXPECTED_001", text, nil, nil).Message(); got != text {
 			t.Errorf("Literal(%q).Message() = %q", text, got)
 		}

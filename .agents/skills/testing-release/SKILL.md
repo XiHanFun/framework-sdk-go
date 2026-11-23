@@ -17,10 +17,12 @@ buf generate
 test -z "$(git status --porcelain -- plugin/v1)"
 test -z "$(gofmt -l .)"
 go vet ./...
+staticcheck ./...        # CI 只在 ubuntu 上跑
 go test ./...            # Linux 上 CI 是 go test -race ./...
 ```
 
 - 生成器 buf、protoc-gen-go、protoc-gen-go-grpc 按 ci.yml「安装 buf 与生成器」一步的版本 `go install`；版本不同，生成物可能对不上。
+- staticcheck 按 ci.yml「staticcheck」一步的版本 `go install`；版本不同，检查项不同。CI 只分析 Linux 的构建，改了 `*_windows.go` 在 Windows 本机跑一遍。
 - 先跑受影响的包（`go test ./plugin/...`），再跑全部。
 - 不删测试、不放宽门禁、不把运行器名单外的跳过当作通过来制造绿色结果。
 

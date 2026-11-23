@@ -205,7 +205,7 @@ func TestKeysRejectTheSpecWhitespace(t *testing.T) {
 			t.Errorf("a key with the control character U+%04X must be rejected", r)
 		}
 	}
-	for _, key := range []string{"orders:1", "a​b", "a᠎b", "订单:1", "a­b"} {
+	for _, key := range []string{"orders:1", "a\u200bb", "a\u180eb", "订单:1", "a\u00adb"} {
 		if !caching.IsKey(key) {
 			t.Errorf("the key %q must be accepted", key)
 		}
