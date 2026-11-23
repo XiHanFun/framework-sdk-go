@@ -83,7 +83,7 @@ func (s LifecycleState) IsTerminal() bool { return s == Stopped }
 // MarshalText 按名字编码。
 func (s LifecycleState) MarshalText() ([]byte, error) {
 	if !s.IsValid() {
-		return nil, &FrameworkError{Code: ErrorCodeInvalidArgument, Message: s.String() + " is not a lifecycle state."}
+		return nil, NewFrameworkError(ErrorCodeInvalidArgument, "%s is not a lifecycle state.", s.String())
 	}
 	return []byte(s.String()), nil
 }
@@ -92,7 +92,7 @@ func (s LifecycleState) MarshalText() ([]byte, error) {
 func (s *LifecycleState) UnmarshalText(text []byte) error {
 	state, ok := ParseLifecycleState(string(text))
 	if !ok {
-		return &FrameworkError{Code: ErrorCodeInvalidArgument, Message: fmt.Sprintf("'%s' is not a lifecycle state.", text)}
+		return NewFrameworkError(ErrorCodeInvalidArgument, "'%s' is not a lifecycle state.", text)
 	}
 	*s = state
 	return nil

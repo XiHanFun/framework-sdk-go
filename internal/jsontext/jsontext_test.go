@@ -133,3 +133,21 @@ func TestPaths(t *testing.T) {
 		t.Errorf("index %s", got)
 	}
 }
+
+// TestIsNumberCoversTheWholeText 核对 IsNumber：文本整个是一个 JSON 数字才算，Parse 允许的首尾空白不算
+func TestIsNumberCoversTheWholeText(t *testing.T) {
+	for _, text := range []string{"0", "-0", "1", "-12", "1.5", "0.0", "1e10", "1E-2", "-1.25e+3", "9007199254740993", "1e400"} {
+		if !IsNumber(text) {
+			t.Errorf("%q is a JSON number", text)
+		}
+	}
+	for _, text := range []string{"", " ", " 1", "1 ", "\t1", "1\n", "+1", "01", "-", "1.", ".5", "1e", "1e+", "0x10", "1,5", "NaN", "Infinity", "-Infinity", "true", "null", `"1"`, "[1]", "1 2"} {
+		if IsNumber(text) {
+			t.Errorf("%q is not a JSON number", text)
+		}
+		// 带空白的写法 Parse 读得出数字，所以不能只看它读出的种类
+		if value, problem := Parse([]byte(text)); (text == " 1" || text == "1 " || text == "\t1" || text == "1\n") && (problem != nil || value.Kind != Number) {
+			t.Errorf("Parse(%q) reads a number surrounded by whitespace", text)
+		}
+	}
+}

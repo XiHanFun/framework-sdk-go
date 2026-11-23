@@ -1,6 +1,6 @@
 name: CI
 
-# Go SDK 的门禁：生成物与规范一致、格式与静态检查、全部测试（含用黑盒运行器跑 echo-go）。
+# Go SDK 的门禁：生成物与规范一致（只在 ubuntu 上核对）、格式与静态检查、全部测试（含用黑盒运行器跑 examples/echo 与 examples/cache 的插件）。
 on:
   push:
     branches: [main, dev]
@@ -33,13 +33,16 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # 生成物只取决于 plugin.proto 与生成器的版本，与操作系统无关：只在 ubuntu 上核对，Windows 任务不必编译 buf
       - name: 安装 buf 与生成器
+        if: matrix.os == 'ubuntu-latest'
         run: |
           go install github.com/bufbuild/buf/cmd/buf@v1.75.0
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
 
       - name: 生成物与规范一致
+        if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           buf generate

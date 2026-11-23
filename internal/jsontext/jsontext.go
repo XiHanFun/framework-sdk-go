@@ -99,6 +99,16 @@ func Parse(data []byte) (*Value, *Problem) {
 	return root, nil
 }
 
+// IsNumber 判断文本整个是一个 JSON 数字（RFC 8259）：不带首尾空白、正号与前导零，NaN 与 Infinity 不算。
+// Parse 允许值的前后有空白，" 1" 也读得出数字，所以判断「是不是数字」用它，不看 Parse 读出的种类
+func IsNumber(text string) bool {
+	if text == "" {
+		return false
+	}
+	reader := parser{data: []byte(text)}
+	return reader.number() && reader.at == len(reader.data)
+}
+
 // frame 是读到的一层位置：父层与本层的成员名或下标，只在需要写路径时展开
 type frame struct {
 	parent *frame

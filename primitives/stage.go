@@ -59,7 +59,7 @@ func (s PipelineStage) IsValid() bool { return s >= 0 && int(s) < len(pipelineSt
 // MarshalText 按清单名编码。
 func (s PipelineStage) MarshalText() ([]byte, error) {
 	if !s.IsValid() {
-		return nil, &FrameworkError{Code: ErrorCodeInvalidArgument, Message: s.String() + " is not a pipeline stage."}
+		return nil, NewFrameworkError(ErrorCodeInvalidArgument, "%s is not a pipeline stage.", s.String())
 	}
 	return []byte(s.ManifestName()), nil
 }
@@ -68,7 +68,7 @@ func (s PipelineStage) MarshalText() ([]byte, error) {
 func (s *PipelineStage) UnmarshalText(text []byte) error {
 	stage, ok := ParsePipelineStage(string(text))
 	if !ok {
-		return &FrameworkError{Code: ErrorCodeInvalidArgument, Message: fmt.Sprintf("'%s' is not a pipeline stage.", text)}
+		return NewFrameworkError(ErrorCodeInvalidArgument, "'%s' is not a pipeline stage.", text)
 	}
 	*s = stage
 	return nil

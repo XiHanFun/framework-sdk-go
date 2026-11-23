@@ -52,7 +52,8 @@ func normalize(value any) any {
 	case bool, string, int64, float64:
 		return typed
 	case json.Number:
-		if !validNumber(string(typed)) {
+		// 整个文本是一个 JSON 数字才按数字读：带首尾空白、正号或前导零的不是，按它的文本
+		if !jsontext.IsNumber(string(typed)) {
 			return string(typed)
 		}
 		return jsoncodec.Number(string(typed))
@@ -122,12 +123,6 @@ func normalize(value any) any {
 		return container{reflected}
 	}
 	return fmt.Sprint(value)
-}
-
-// validNumber 判断文本是不是一个合法的 JSON 数字
-func validNumber(text string) bool {
-	root, problem := jsontext.Parse([]byte(text))
-	return problem == nil && root.Kind == jsontext.Number
 }
 
 // FormatValue 返回消息参数的文本形式，模板与 Describe 共用（RFC-0010「模板」）：先按值模型归一（见 FormatArgument），

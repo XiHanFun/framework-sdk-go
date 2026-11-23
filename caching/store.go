@@ -8,6 +8,8 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/xihanfun/framework-spec/conformance/rules"
+
 	"github.com/xihanfun/framework-sdk-go/primitives"
 )
 
@@ -82,13 +84,14 @@ type Lookup struct {
 	Found bool
 }
 
-// IsKey 判断键是否合法：非空、不含空白与控制字符、不超过 MaxKeyLength。
+// IsKey 判断键是否合法：非空、不含空白与控制字符、不超过 MaxKeyLength。空白按 RFC-0001「空白字符」的 25 个码位
+// （rules.IsWhitespace，与握手行、Error 的文案同一个函数），不用 unicode.IsSpace，免得与规范的表悄悄分叉。
 func IsKey(key string) bool {
 	if key == "" || len(key) > MaxKeyLength {
 		return false
 	}
 	for _, char := range key {
-		if unicode.IsSpace(char) || unicode.IsControl(char) {
+		if rules.IsWhitespace(char) || unicode.IsControl(char) {
 			return false
 		}
 	}
@@ -121,7 +124,8 @@ func ValidateKeys(keys []string) *primitives.Error {
 	return nil
 }
 
-// Store 是 RFC-0006 的字节级存储契约。返回的错误应是 *primitives.Error；其他错误由操作集按后端不可用处理。
+// Store 是 RFC-0006 的字节级存储契约。返回的错误应是（或用 %w 包着）*primitives.Error，操作集把它原样交给宿主；其他错误按后端不可用处理。
+// 键、选项与 base64 由操作集在调用 Store 之前校验；直接被别的代码调用的实现（如 MemoryStore）仍应自己校验。
 // 批量方法按 conventions/batch-first.md：一次完成、结果与入参等长且顺序一致、空集合不触后端、基础设施失败整批报错。
 type Store interface {
 	// Get 读取；不存在或已过期时第二个返回值为假。滑动过期的条目在读取时延长。

@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"reflect"
@@ -166,6 +167,8 @@ func TestHookFailuresFollowTheReasonRule(t *testing.T) {
 		details func(phase string) map[string]any
 	}{
 		{"primitives error", func() error { return own }, "PROBE_VALIDATION_002", "probe.configuration.invalid", func(string) map[string]any { return map[string]any{"field": "greeting"} }},
+		// 用 %w 包了一层上下文的 *primitives.Error 仍是回调返回的失败，原样带出，不按抛出处理
+		{"wrapped primitives error", func() error { return fmt.Errorf("load settings: %w", own) }, "PROBE_VALIDATION_002", "probe.configuration.invalid", func(string) map[string]any { return map[string]any{"field": "greeting"} }},
 		{"path error", func() error { return &fs.PathError{Op: "open", Path: "C:\\secret", Err: errors.New("denied")} }, ErrorCodeUnexpected, MessageUnexpected, func(phase string) map[string]any {
 			return map[string]any{"id": probeID, "phase": phase, "reason": "PathError"}
 		}},

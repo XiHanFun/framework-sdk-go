@@ -49,18 +49,15 @@ var (
 	capabilityIDPattern = regexp.MustCompile(`^[a-z][a-z0-9]*\.[a-z][a-z0-9-]*$`)
 	semverPattern       = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`)
 	versionPattern      = regexp.MustCompile(`^[1-9][0-9]*$`)
-	rangePattern        = regexp.MustCompile(`^(\^)?([1-9][0-9]*)$`)
 	requirementPattern  = regexp.MustCompile(`^([a-z][a-z0-9]*\.[a-z][a-z0-9-]*)@(\^?)([1-9][0-9]*)(\??)$`)
 	declarationPattern  = regexp.MustCompile(`^([a-z][a-z0-9]*\.[a-z][a-z0-9-]*)@([1-9][0-9]*)$`)
 	activationPattern   = regexp.MustCompile(`^(onStartup|onOperation:[a-z0-9.*-]+|onEvent:[a-z0-9.*-]+)$`)
 	permissionPattern   = regexp.MustCompile(`^(net\.outbound|fs\.read|fs\.write|capability):.+$`)
 	bindingNamePattern  = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 	bindingTypePattern  = regexp.MustCompile(`^[a-z]+(:[a-z]+)?$`)
-	// operationPattern 是操作 ID 文法 <resource>.<verb>（RFC-0011，与 operation.IsID 一致）：连字符只在字母数字之间
-	operationPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*\.[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
-	sectionPattern   = regexp.MustCompile(`^XiHan:[A-Z][A-Za-z0-9]*(:[A-Z][A-Za-z0-9]*)*$`)
-	healthPattern    = regexp.MustCompile(`^[a-z][a-z0-9.-]*$`)
-	permCodePattern  = regexp.MustCompile(`^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$`)
+	sectionPattern      = regexp.MustCompile(`^XiHan:[A-Z][A-Za-z0-9]*(:[A-Z][A-Za-z0-9]*)*$`)
+	healthPattern       = regexp.MustCompile(`^[a-z][a-z0-9.-]*$`)
+	permCodePattern     = regexp.MustCompile(`^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$`)
 )
 
 // IsManifestID 判断清单 ID 是否符合 xihan.<领域>.<名称>。
@@ -134,5 +131,5 @@ func (m *Manifest) ConfigSection() string {
 
 // invalid 创建清单校验失败的配置错误。
 func invalid(format string, arguments ...any) error {
-	return &primitives.FrameworkError{Code: primitives.ErrorCodeInvalidArgument, Message: fmt.Sprintf(format, arguments...) + "."}
+	return primitives.NewFrameworkError(primitives.ErrorCodeInvalidArgument, "%s.", fmt.Sprintf(format, arguments...))
 }

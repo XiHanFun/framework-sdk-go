@@ -111,8 +111,16 @@ func TestRegistryRejectsDuplicatesAndBadIDs(t *testing.T) {
 	if list := registry.List(); len(list) != 1 || list[0].Owner != pipeline.AppOwner {
 		t.Errorf("list %v", list)
 	}
-	if !operation.IsID("order-lines.list") || operation.IsID("orders") {
-		t.Error("ID grammar")
+	// 操作 ID 的文法是 conventions/operation-ids.md 的 <resource>.<verb>（rules.IsOperationID）：连字符只在字母数字之间
+	for _, id := range []string{"orders.create", "order-lines.list", "a1-b2.c3-d4"} {
+		if !operation.IsID(id) {
+			t.Errorf("%q is an operation ID", id)
+		}
+	}
+	for _, id := range []string{"", "orders", "Orders.Create", "1orders.create", "orders-.create", "order--lines.list", "orders.create-", "orders.create.v2", "orders.create\n", "orders_lines.list"} {
+		if operation.IsID(id) {
+			t.Errorf("%q is not an operation ID", id)
+		}
 	}
 }
 

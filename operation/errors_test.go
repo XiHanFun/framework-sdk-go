@@ -54,6 +54,40 @@ func TestUnknownOperation(t *testing.T) {
 		"KERNEL_NOTFOUND_001", "kernel.operation.unknown", map[string]any{"id": "orders.missing"}, "Operation 'orders.missing' is not registered.")
 }
 
+// TestDispatchWithoutACallStillFillsTheTemplate 核对管道的终点拿不到这次调用（中间件把别的上下文传给了 next）时的未登记错误：
+// 同样带参数 id（没有可报的操作，为空），模板的 {id} 有值，文案不退回成消息键
+func TestDispatchWithoutACallStillFillsTheTemplate(t *testing.T) {
+	detached := pipeline.NewBuilder().UseAt(pipeline.Func("Detach", func(_ *invocation.Context, next pipeline.Step) primitives.Result[primitives.Unit] {
+		return next(invocation.Background())
+	}), primitives.Transaction, pipeline.End, "")
+	invoker := newInvoker(t, detached)
+	assertError(t, invoker.Invoke(invocation.Background(), operation.Request{ID: "orders.create", Payload: []byte(`{"quantity":1}`)}).Outcome.Err(),
+		"KERNEL_NOTFOUND_001", "kernel.operation.unknown", map[string]any{"id": ""}, "Operation '' is not registered.")
+	assertError(t, operation.Invoke[createOrder, orderCreated](invoker, invocation.Background(), "orders.create", createOrder{Quantity: 1}).Err(),
+		"KERNEL_NOTFOUND_001", "kernel.operation.unknown", map[string]any{"id": ""}, "Operation '' is not registered.")
+}
+
+// TestUnhandledExceptionCarriesOnlyFrameworkErrors 核对 UnhandledException（RFC-0011 规则 5）：KERNEL_UNEXPECTED_001 +
+// kernel.invocation.unhandled_exception、没有参数；原因是（或包着）FrameworkError 时它的错误作为内部错误，其余的原因不进错误
+func TestUnhandledExceptionCarriesOnlyFrameworkErrors(t *testing.T) {
+	const message = "An unhandled exception occurred during the invocation."
+	for _, cause := range []any{nil, "secret detail", 42, errors.New("C:\\secret\\connection-string")} {
+		failure := operation.UnhandledException(cause)
+		assertError(t, failure, "KERNEL_UNEXPECTED_001", "kernel.invocation.unhandled_exception", nil, message)
+		if failure.Inner != nil {
+			t.Errorf("the cause %#v must not become an inner error: %v", cause, failure.Inner)
+		}
+	}
+	framework := &primitives.FrameworkError{Code: "ORDERS_VALIDATION_009", Message: "Misconfigured."}
+	for _, cause := range []any{framework, fmt.Errorf("while encoding: %w", framework)} {
+		failure := operation.UnhandledException(cause)
+		assertError(t, failure, "KERNEL_UNEXPECTED_001", "kernel.invocation.unhandled_exception", nil, message)
+		if inner := failure.Inner; inner == nil || inner.Code != "ORDERS_VALIDATION_009" || inner.Message() != "Misconfigured." {
+			t.Errorf("a FrameworkError becomes the inner error: %v", inner)
+		}
+	}
+}
+
 type orderLine struct {
 	Quantity int `json:"quantity"`
 }

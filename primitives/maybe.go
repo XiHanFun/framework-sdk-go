@@ -39,7 +39,7 @@ func (m Maybe[T]) Or(fallback T) T {
 // Must 返回值；无值时 panic FrameworkError。
 func (m Maybe[T]) Must() T {
 	if !m.has {
-		panic(&FrameworkError{Code: ErrorCodeInvalidArgument, Message: "The maybe has no value."})
+		panic(NewFrameworkError(ErrorCodeInvalidArgument, "The maybe has no value."))
 	}
 	return m.value
 }

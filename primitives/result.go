@@ -23,7 +23,7 @@ func Ok[T any](value T) Result[T] { return Result[T]{value: value, ok: true} }
 // Fail 创建失败结果；err 为 nil 是编程错误。
 func Fail[T any](err *Error) Result[T] {
 	if err == nil {
-		panic(&FrameworkError{Code: ErrorCodeInvalidArgument, Message: "A failed result needs an error."})
+		panic(NewFrameworkError(ErrorCodeInvalidArgument, "A failed result needs an error."))
 	}
 	return Result[T]{err: err}
 }
@@ -63,7 +63,7 @@ func (r Result[T]) Or(fallback T) T {
 func (r Result[T]) Must() T {
 	if !r.ok {
 		err := r.Err()
-		panic(&FrameworkError{Code: err.Code, Message: err.Message()})
+		panic(NewFrameworkError(err.Code, "%s", err.Message()))
 	}
 	return r.value
 }

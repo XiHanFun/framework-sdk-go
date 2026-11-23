@@ -99,7 +99,14 @@ func FromStatus(status *pluginv1.Status, pluginID, phase string) primitives.Resu
 //   - trace_parent 按 RFC-0003 的文法取，不合文法即没有父 Span；trace_state 不进上下文；
 //   - baggage 只保留已登记的键（conventions/baggage-keys.md），值不能进入上下文的丢掉（invocation.WithBaggage）；
 //   - deadline 按严格的文法读（rules.ParseDeadline），读不出当作没有；生效的截止时间取它与 parent 的截止时间中较早的一个。
+//
+// 同 invocation.New，带截止时间的上下文到截止时间或 parent 取消才归还定时器；运行时自己的调用用 invocation.NewWithCancel，结束时释放。
 func FromMetadata(parent context.Context, metadata *pluginv1.InvocationMetadata) *invocation.Context {
+	return invocation.New(parent, metadataOptions(parent, metadata)...)
+}
+
+// metadataOptions 把协议的上下文元数据换成调用上下文的选项，规则见 FromMetadata。
+func metadataOptions(parent context.Context, metadata *pluginv1.InvocationMetadata) []invocation.Option {
 	options := []invocation.Option{}
 	if traceParent := metadata.GetTraceParent(); traceParent != "" {
 		options = append(options, invocation.WithTraceParent(traceParent))
@@ -123,7 +130,7 @@ func FromMetadata(parent context.Context, metadata *pluginv1.InvocationMetadata)
 		}
 		options = append(options, invocation.WithDeadline(deadline))
 	}
-	return invocation.New(parent, options...)
+	return options
 }
 
 // ToMetadata 把调用上下文编码为协议的上下文元数据（invocation.md §2、§5）：trace_parent 是当前 Span 的 traceparent；

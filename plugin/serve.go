@@ -182,7 +182,8 @@ func validate(m *manifest.Manifest, opts Options) error {
 	declared := make(map[[2]string]bool, len(opts.Subscriptions))
 	for _, subscription := range opts.Subscriptions {
 		declaration := subscription.Subscription
-		if subscription.Handler == nil || !isTopic(declaration.Topic) {
+		// 主题的文法是 RFC-0009 的那一份（rules.IsTopic）
+		if subscription.Handler == nil || !rules.IsTopic(declaration.Topic) {
 			return configurationError("the subscription '%s' of '%s' needs a valid topic and a handler", declaration.Topic, m.ID)
 		}
 		if !isSubscriptionMode(declaration.Mode) {
@@ -238,24 +239,6 @@ func parseVersions(text string) ([]uint32, error) {
 	return versions, nil
 }
 
-// isTopic 判断主题是否符合 RFC-0009 的文法。
-func isTopic(topic string) bool {
-	if len(topic) == 0 || len(topic) > 128 {
-		return false
-	}
-	for index, char := range topic {
-		lower := char >= 'a' && char <= 'z'
-		digit := char >= '0' && char <= '9'
-		if index == 0 && !lower && !digit {
-			return false
-		}
-		if !lower && !digit && char != '.' && char != '_' && char != '-' {
-			return false
-		}
-	}
-	return true
-}
-
 // isSubscriptionMode 判断订阅方式是否为空、competing 或 broadcast（RFC-0009「订阅方式」）。
 func isSubscriptionMode(mode SubscriptionMode) bool {
 	return mode == "" || mode == SubscriptionModeCompeting || mode == SubscriptionModeBroadcast
@@ -263,5 +246,5 @@ func isSubscriptionMode(mode SubscriptionMode) bool {
 
 // configurationError 创建配置错误。
 func configurationError(format string, arguments ...any) error {
-	return &primitives.FrameworkError{Code: primitives.ErrorCodeInvalidArgument, Message: fmt.Sprintf(format, arguments...) + "."}
+	return primitives.NewFrameworkError(primitives.ErrorCodeInvalidArgument, "%s.", fmt.Sprintf(format, arguments...))
 }

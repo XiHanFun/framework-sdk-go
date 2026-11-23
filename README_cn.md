@@ -7,7 +7,7 @@
 <p>
   <a href="https://github.com/XiHanFun/framework-sdk-go/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/XiHanFun/framework-sdk-go/ci.yml?branch=main&style=flat-square&label=CI" /></a>
   <a href="https://pkg.go.dev/github.com/xihanfun/framework-sdk-go"><img alt="Go Reference" src="https://pkg.go.dev/badge/github.com/xihanfun/framework-sdk-go.svg" /></a>
-  <img alt="Go 1.26" src="https://img.shields.io/badge/Go-1.26-00ADD8?style=flat-square&logo=go&logoColor=white" />
+  <img alt="Go version" src="https://img.shields.io/github/go-mod/go-version/XiHanFun/framework-sdk-go?style=flat-square&logo=go&logoColor=white&color=00ADD8" />
   <a href="./LICENSE"><img alt="MIT License" src="https://img.shields.io/github/license/XiHanFun/framework-sdk-go?style=flat-square&color=green" /></a>
   <a href="https://github.com/XiHanFun/framework-sdk-go/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/XiHanFun/framework-sdk-go?style=flat-square&logo=github&label=Stars&color=1f6feb" /></a>
 </p>

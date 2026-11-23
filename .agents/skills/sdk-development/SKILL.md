@@ -30,7 +30,7 @@ go list -m github.com/xihanfun/framework-spec/conformance
 
 - 错误码、消息键、参数名与 en-US 模板照 .NET 逐字一致（`kernel-messages.json`、`primitives.DefaultTemplate`）。
 - 读 JSON 先过 `internal/jsontext`，值模型与载荷解码用 `internal/jsoncodec`；成员名区分大小写、重复成员拒绝、`null` 落在数值与布尔上不接受，不随 `encoding/json` 的缺省。
-- 规范的文法与判定调用一致性模块的 `rules`，不另写一份。
+- 规范的文法与判定：`rules` 里有、SDK 已经在调用的照样调用，不另写一份；原语层等自己实现、靠回放向量验证的部分见 `references/spec-map.md`。
 - 可恢复失败返回 `*primitives.Error` / `Result[T]`，编程错误 panic `*primitives.FrameworkError`；登记表与集合有容量上限。
 
 ## 规范没写到时

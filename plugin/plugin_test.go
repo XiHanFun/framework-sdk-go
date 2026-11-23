@@ -685,6 +685,12 @@ func TestServeRejectsBadSubscriptions(t *testing.T) {
 		{"unknown mode", subscribe(Subscription{Topic: "probe.events", Mode: "fanout"}), "the mode 'fanout'"},
 		{"mode in another case", subscribe(Subscription{Topic: "probe.events", Mode: "Broadcast"}), "the mode 'Broadcast'"},
 		{"invalid topic", subscribe(Subscription{Topic: "Probe.Events"}), "valid topic"},
+		// 主题的文法是 RFC-0009 的 ^[a-z0-9][a-z0-9._-]{0,127}$（rules.IsTopic）：长度、首字符、行尾与非 ASCII 的边界
+		{"empty topic", subscribe(Subscription{Topic: ""}), "valid topic"},
+		{"topic of 129 characters", subscribe(Subscription{Topic: strings.Repeat("a", 129)}), "valid topic"},
+		{"topic starting with a dot", subscribe(Subscription{Topic: ".probe"}), "valid topic"},
+		{"topic ending with a line feed", subscribe(Subscription{Topic: "probe.events\n"}), "valid topic"},
+		{"topic with a non-ASCII letter", subscribe(Subscription{Topic: "probe.évents"}), "valid topic"},
 		{"same pair twice", subscribe(Subscription{Topic: "probe.events"}, Subscription{Topic: "probe.events"}), "declared more than once"},
 		{"empty and competing are the same mode", subscribe(Subscription{Topic: "probe.events"}, Subscription{Topic: "probe.events", Mode: SubscriptionModeCompeting}), "declared more than once"},
 		{"one pair in both modes", subscribe(Subscription{Topic: "probe.events", MessageType: "probe.created", Mode: SubscriptionModeCompeting}, Subscription{Topic: "probe.events", MessageType: "probe.created", Mode: SubscriptionModeBroadcast}), "declared more than once"},
@@ -710,6 +716,12 @@ func TestServeRejectsBadSubscriptions(t *testing.T) {
 	)
 	if _, err := serve(accepted); err == nil || !strings.Contains(err.Error(), EnvSession) {
 		t.Errorf("distinct (topic, type) pairs must pass the subscription checks, got %v", err)
+	}
+	// 文法之内的边界：128 个字符、数字开头、点、下划线与连字符
+	for _, topic := range []string{strings.Repeat("a", 128), "0", "9probe._-events"} {
+		if _, err := serve(subscribe(Subscription{Topic: topic})); err == nil || !strings.Contains(err.Error(), EnvSession) {
+			t.Errorf("the topic %q must pass the subscription checks, got %v", topic, err)
+		}
 	}
 }
 

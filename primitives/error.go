@@ -1,7 +1,6 @@
 package primitives
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/xihanfun/framework-sdk-go/internal/jsoncodec"
@@ -27,7 +26,7 @@ type Error struct {
 func NewError(code, messageKey string, details map[string]any, inner *Error) *Error {
 	mustErrorCode(code)
 	if !IsMessageKey(messageKey) {
-		panic(&FrameworkError{Code: ErrorCodeInvalidArgument, Message: fmt.Sprintf("The message key '%s' must match <domain>.<segment>[.<segment>].", messageKey)})
+		panic(NewFrameworkError(ErrorCodeInvalidArgument, "The message key '%s' must match <domain>.<segment>[.<segment>].", messageKey))
 	}
 	return &Error{Code: code, MessageKey: messageKey, Details: details, Inner: inner}
 }
@@ -46,7 +45,7 @@ func isBlank(text string) bool { return strings.TrimFunc(text, rules.IsWhitespac
 // mustText 校验自由文本：为空或只有空白即 panic。
 func mustText(text, owner string) {
 	if isBlank(text) {
-		panic(&FrameworkError{Code: ErrorCodeInvalidArgument, Message: owner + " needs a text that is not empty or whitespace."})
+		panic(NewFrameworkError(ErrorCodeInvalidArgument, "%s needs a text that is not empty or whitespace.", owner))
 	}
 }
 
@@ -94,7 +93,7 @@ func Unexpected(code, messageKey string, details map[string]any, inner *Error) *
 func ofKind(kind, code, messageKey string, details map[string]any, inner *Error) *Error {
 	err := NewError(code, messageKey, details, inner)
 	if err.Kind() != kind {
-		panic(&FrameworkError{Code: ErrorCodeInvalidArgument, Message: fmt.Sprintf("The error code '%s' must have the kind %s.", code, kind)})
+		panic(NewFrameworkError(ErrorCodeInvalidArgument, "The error code '%s' must have the kind %s.", code, kind))
 	}
 	return err
 }
@@ -151,6 +150,15 @@ func (e *Error) Is(target error) bool {
 	return ok && other.Code == e.Code
 }
 
+// Unwrap 返回内部错误，让 errors.Is / errors.As 沿着 Inner 往里找；没有内部错误时返回 nil。
+func (e *Error) Unwrap() error {
+	// 不能直接 return e.Inner：nil 的 *Error 装进 error 接口不等于 nil，errors.Is / errors.As 会接着在它上面调方法
+	if e.Inner == nil {
+		return nil
+	}
+	return e.Inner
+}
+
 // MarshalJSON 实现线上编码（RFC-0001）：成员按 code、message、messageKey、details、inner 的顺序写出；message 是发送端已解析的文案，
 // 总是写出；messageKey 只在有键时写（Literal 没有键），让接收端可再翻译；details 为空、inner 没有时不写。细节按值模型写出：
 // 整数值的浮点带小数点，非有限值写成字符串，64 位范围内的整数原样（ADR-0236）
@@ -205,7 +213,7 @@ func decodeError(data []byte, root *jsontext.Value) (*Error, error) {
 	}
 	code, ok := wireString(codeValue, true)
 	if !ok || !IsErrorCode(code) {
-		return nil, &FrameworkError{Code: ErrorCodeInvalidArgument, Message: fmt.Sprintf("The error code %s must match <DOMAIN>_<KIND>_<NNN>.", raw(data, codeValue))}
+		return nil, NewFrameworkError(ErrorCodeInvalidArgument, "The error code %s must match <DOMAIN>_<KIND>_<NNN>.", raw(data, codeValue))
 	}
 	decoded := &Error{Code: code}
 	// 只有空白的 message 与空串一样不合法（RFC-0001「空白字符」，ADR-0245）：Error 的文案至少要有一个空白之外的字符
@@ -214,7 +222,7 @@ func decodeError(data []byte, root *jsontext.Value) (*Error, error) {
 	}
 	if key, has := root.Find("messageKey"); has {
 		if decoded.MessageKey, ok = wireString(key, true); !ok || !IsMessageKey(decoded.MessageKey) {
-			return nil, &FrameworkError{Code: ErrorCodeInvalidArgument, Message: fmt.Sprintf("The message key %s of an error on the wire must match <domain>.<segment>[.<segment>].", raw(data, key))}
+			return nil, NewFrameworkError(ErrorCodeInvalidArgument, "The message key %s of an error on the wire must match <domain>.<segment>[.<segment>].", raw(data, key))
 		}
 	}
 	if details, has := root.Find("details"); has {

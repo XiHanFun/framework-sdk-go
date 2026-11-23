@@ -19,6 +19,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/xihanfun/framework-spec/conformance/rules"
+
 	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
 	"github.com/xihanfun/framework-sdk-go/invocation"
 	"github.com/xihanfun/framework-sdk-go/manifest"
@@ -97,17 +99,10 @@ type service struct {
 	r *runtime
 }
 
-// negotiate 选宿主列表里最高的本 SDK 也支持的协议版本。
+// negotiate 选宿主列表里最高的本 SDK 也支持的协议版本（handshake.md §3）：规则是一致性模块的 rules.NegotiateVersion，
+// 本 SDK 支持的只有 ProtocolVersion。
 func negotiate(host []uint32) (uint32, bool) {
-	var selected uint32
-	found := false
-	for _, candidate := range host {
-		if candidate == ProtocolVersion && (!found || candidate > selected) {
-			selected = candidate
-			found = true
-		}
-	}
-	return selected, found
+	return rules.NegotiateVersion(host, []uint32{ProtocolVersion})
 }
 
 // Handshake 协商版本、报告原语层版本并交换清单、操作、订阅与目录（handshake.md §3），只在 Declared 接受一次。
@@ -309,14 +304,15 @@ func (s *service) Invoke(ctx context.Context, request *pluginv1.InvokeRequest) (
 	}
 	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	invocationCtx := r.newContext(callCtx, request.Metadata)
-	release, ok := r.calls.enter(cancel, invocationCtx.Tenant())
+	invocationCtx, release := r.newContext(callCtx, request.Metadata)
+	defer release()
+	leave, ok := r.calls.enter(cancel, invocationCtx.Tenant())
 	if !ok {
 		// 核对可服务之后、登记之前停止已经开始：与停止之后到达的调用一样拒绝
 		state, _ := r.lifecycle.current()
 		return &pluginv1.InvokeResponse{Status: ToStatus(r.unavailable(state))}, nil
 	}
-	defer release()
+	defer leave()
 	response := r.invoker.Invoke(invocationCtx, operation.Request{ID: request.Operation, Payload: request.Payload})
 	return &pluginv1.InvokeResponse{Status: ToStatus(response.Outcome), Payload: response.Payload}, nil
 }
@@ -356,13 +352,14 @@ func (s *service) HandleEvent(ctx context.Context, request *pluginv1.HandleEvent
 	}
 	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	invocationCtx := r.newContext(callCtx, request.Metadata)
-	release, ok := r.calls.enter(cancel, invocationCtx.Tenant())
+	invocationCtx, release := r.newContext(callCtx, request.Metadata)
+	defer release()
+	leave, ok := r.calls.enter(cancel, invocationCtx.Tenant())
 	if !ok {
 		state, _ := r.lifecycle.current()
 		return &pluginv1.HandleEventResponse{Status: ToStatus(r.unavailable(state))}, nil
 	}
-	defer release()
+	defer leave()
 	for _, handler := range handlers {
 		if outcome := r.deliver(invocationCtx, handler, envelope, request.Attempt); !outcome.OK() {
 			return &pluginv1.HandleEventResponse{Status: ToStatus(outcome)}, nil
@@ -376,11 +373,12 @@ func (r *runtime) unavailable(state primitives.LifecycleState) primitives.Result
 	return primitives.Fail[primitives.Unit](processUnavailable(r.manifest.ID, state))
 }
 
-// newContext 从 gRPC 上下文与协议元数据还原调用上下文（invocation.md §2），并放入宿主客户端。
-func (r *runtime) newContext(parent context.Context, metadata *pluginv1.InvocationMetadata) *invocation.Context {
-	ctx := FromMetadata(parent, metadata)
+// newContext 从 gRPC 上下文与协议元数据还原调用上下文（invocation.md §2，规则同 FromMetadata），并放入宿主客户端。
+// 返回的函数在调用结束时调用：归还截止时间的定时器，不让每个已结束的调用各留一个到截止时间才到期的
+func (r *runtime) newContext(parent context.Context, metadata *pluginv1.InvocationMetadata) (*invocation.Context, context.CancelFunc) {
+	ctx, release := invocation.NewWithCancel(parent, metadataOptions(parent, metadata)...)
 	ctx.Set(hostKey{}, r.host)
-	return ctx
+	return ctx, release
 }
 
 // handlersFor 按主题、投递的订阅方式与可选的消息类型找订阅处理器，按声明顺序（invocation.md §4）。
@@ -406,18 +404,13 @@ func (r *runtime) deliver(ctx *invocation.Context, handler EventHandler, envelop
 			return
 		}
 		r.logger.Error("an event handler panicked", "topic", envelope.Topic, "id", envelope.ID, "traceId", ctx.TraceID(), "panic", fmt.Sprint(recovered), "stack", string(debug.Stack()))
-		var inner *primitives.Error
-		var framework *primitives.FrameworkError
-		if err, ok := recovered.(error); ok && errors.As(err, &framework) {
-			inner = framework.ToError()
-		}
-		outcome = primitives.Fail[primitives.Unit](primitives.Unexpected(operation.ErrorCodeUnexpected, invocation.MessageUnhandledException, nil, inner))
+		outcome = primitives.Fail[primitives.Unit](operation.UnhandledException(recovered))
 	}()
 	return handler(ctx, envelope, attempt)
 }
 
-// runHook 执行一个生命周期回调并换成结果（lifecycle.md §7.2、§7.5、§7.6）：返回 *primitives.Error 是回调返回失败，原样带出；
-// 返回别的 error 或 panic 是回调抛出，为 PLUGINS_UNEXPECTED_001 + plugins.process.failed，reason 是错误的简单类型名或 panic。
+// runHook 执行一个生命周期回调并换成结果（lifecycle.md §7.2、§7.5、§7.6）：返回的错误是（或用 %w 包着）*primitives.Error 是回调返回失败，
+// 取出它原样带出；返回别的 error 或 panic 是回调抛出，为 PLUGINS_UNEXPECTED_001 + plugins.process.failed，reason 是错误的简单类型名或 panic。
 // 错误的文本、panic 的值与堆栈只写进 stderr 日志：文本可能含路径、连接串，不能随错误交给宿主
 func (r *runtime) runHook(phase string, call func() error) (outcome primitives.Result[primitives.Unit]) {
 	defer func() {
@@ -430,11 +423,14 @@ func (r *runtime) runHook(phase string, call func() error) (outcome primitives.R
 	if err == nil {
 		return primitives.Success()
 	}
-	if typed, ok := err.(*primitives.Error); ok {
-		// 装着 nil 指针的 error 不是失败：返回 (*primitives.Error)(nil) 的回调本意是成功
-		if typed == nil {
-			return primitives.Success()
-		}
+	// 装着 nil 指针的 error 不是失败：返回 (*primitives.Error)(nil) 的回调本意是成功
+	if direct, ok := err.(*primitives.Error); ok && direct == nil {
+		return primitives.Success()
+	}
+	// errors.As 而不是类型断言：回调给自己的失败加一层上下文（fmt.Errorf("load settings: %w", err)）之后仍是它返回的失败。
+	// 链里找到的是 nil 指针时不算，落到下面按抛出处理
+	var typed *primitives.Error
+	if errors.As(err, &typed) && typed != nil {
 		return primitives.Fail[primitives.Unit](typed)
 	}
 	name := errorTypeName(err)

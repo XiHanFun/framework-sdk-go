@@ -55,6 +55,22 @@ func TestArraysAndObjectsAreCompactJSON(t *testing.T) {
 	}
 }
 
+// TestJSONNumberMustCoverTheWholeText 核对 json.Number 只有整个是一个 JSON 数字才按数字读：带首尾空白的不是合法的数字，
+// 按它的文本写出，不读成 0
+func TestJSONNumberMustCoverTheWholeText(t *testing.T) {
+	for _, text := range []string{" 1", "1 ", "\t7.50", "7.50\n", " ", "+1", "01"} {
+		if got := primitives.FormatValue(json.Number(text)); got != text {
+			t.Errorf("FormatValue(json.Number(%q)) = %q, want the text itself", text, got)
+		}
+	}
+	if got := primitives.FormatValue([]any{json.Number(" 1"), json.Number("1")}); got != `[" 1",1]` {
+		t.Errorf("inside an array: %s", got)
+	}
+	if got := primitives.FormatArgument(json.Number("12 "), "D4"); got != "12 " {
+		t.Errorf("a specifier does not apply to text: %q", got)
+	}
+}
+
 // TestOnlyPortableSpecifiersAreRecognised 核对说明符只认 ^[DdFfNnXx][0-9]{0,2}$，不适用时按无格式写出（ADR-0236）
 func TestOnlyPortableSpecifiersAreRecognised(t *testing.T) {
 	cases := []struct {

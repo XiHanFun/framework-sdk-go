@@ -1,5 +1,7 @@
 package primitives
 
+import "fmt"
+
 // 框架信息（RFC-0001 FrameworkInfo）。
 const (
 	// Name 是框架名。
@@ -25,6 +27,12 @@ type FrameworkError struct {
 	Message string
 	// Cause 是底层错误；可空。
 	Cause error
+}
+
+// NewFrameworkError 创建配置或编程错误：code 是错误码，消息由 format 与 arguments 按 fmt.Sprintf 组装（英文，句子以句号结尾，
+// 标识符用单引号）。要带底层错误的在返回值上设 Cause
+func NewFrameworkError(code, format string, arguments ...any) *FrameworkError {
+	return &FrameworkError{Code: code, Message: fmt.Sprintf(format, arguments...)}
 }
 
 // Error 实现 error。

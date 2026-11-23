@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/xihanfun/framework-spec/conformance/rules"
+
 	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
 	"github.com/xihanfun/framework-sdk-go/primitives"
 )
@@ -164,10 +166,11 @@ func buildRootShape() *objectShape {
 	}
 	permissions := list(text(permCodePattern.MatchString))
 	permissions.unique = true
+	// 操作 ID 的文法 <resource>.<verb>（RFC-0011，连字符只在字母数字之间）只有 rules.IsOperationID 这一份，operation.IsID 用的也是它
 	contributions := &objectShape{
 		members: map[string]*valueShape{
 			"pipeline":    list(object(pipeline)),
-			"operations":  list(text(operationPattern.MatchString)),
+			"operations":  list(text(rules.IsOperationID)),
 			"config":      object(config),
 			"permissions": permissions,
 			"health":      list(text(healthPattern.MatchString)),

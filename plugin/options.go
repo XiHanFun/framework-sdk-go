@@ -171,7 +171,7 @@ type Configuration struct {
 	WorkDirectory string
 }
 
-// Hooks 是插件作者接入生命周期的回调；都可为空。返回 *primitives.Error 时它原样作为 Status.error 回给宿主；返回别的 error 或 panic
+// Hooks 是插件作者接入生命周期的回调；都可为空。返回的错误是（或用 %w 包着）*primitives.Error 时它原样作为 Status.error 回给宿主；返回别的 error 或 panic
 // 算作回调抛出（lifecycle.md §7.6）：PLUGINS_UNEXPECTED_001 + plugins.process.failed，reason 是错误的动态类型名（去掉包名与 *，
 // 如 *fs.PathError 写 PathError），panic 写 panic，错误的文本与 panic 的值只写进 stderr 日志。
 type Hooks struct {
@@ -199,7 +199,8 @@ type Options struct {
 	Manifest []byte
 	// Operations 是插件服务的操作；每个 ID 必须出现在清单 contributes.operations 里。
 	Operations *operation.Registry
-	// Pipeline 是插件内的管道；为空时只有 handle 阶段。
+	// Pipeline 是插件内的管道；为空时只有调用器的三个内置步骤（Observe 阶段翻译 panic、Resilience 阶段核对截止时间、
+	// Validate 阶段解码载荷，RFC-0011 规则 10）与 handle 阶段之后的操作分派，给了也照样加上这三步。
 	Pipeline *pipeline.Builder
 	// Subscriptions 是事件订阅与处理器。
 	Subscriptions []SubscriptionHandler

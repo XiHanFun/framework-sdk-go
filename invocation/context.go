@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"regexp"
 	"sync"
 	"sync/atomic"
@@ -64,7 +63,7 @@ type Context struct {
 	items         *items
 }
 
-// deadlineToken 是截止令牌（RFC-0004、ADR-0092）：到达截止时间时由定时器置位，调用方的取消不停它。
+// deadlineToken 是截止令牌（RFC-0004、ADR-0092）：到达截止时间时由定时器置位，调用方的取消不停它，只有 NewWithCancel 的释放停它。
 // 嵌入的 context.Context 先被取消时 Err() 停在 Canceled，截止令牌照样在截止时间置位，超时与取消的归因只看它
 type deadlineToken struct {
 	fired atomic.Bool
@@ -123,7 +122,28 @@ func WithBaggage(baggage map[string]string) Option {
 }
 
 // New 创建上下文：没有追踪时生成新的 Trace ID 与 Span ID；parent 为 nil 时用 context.Background()。
+// 带截止时间的上下文占着定时器与 parent 上的一个登记，到截止时间或 parent 取消为止（与不调 cancel 的 context.WithDeadline 相同）；
+// 调用一结束就该归还的（插件运行时的每次调用、长寿命的 parent）用 NewWithCancel
 func New(parent context.Context, options ...Option) *Context {
+	c, _ := create(parent, options)
+	return c
+}
+
+// NewWithCancel 同 New，另返回释放函数，用法同 context.WithCancel（调用结束时 defer 它）：释放时上下文以取消结束
+// （Err() 为 context.Canceled），parent 上的登记与截止时间的定时器立即归还，截止令牌此后不再置位；已经置位的保持。
+// 没有截止时间的上下文同样可以释放。释放函数可以重复调用、可以并发调用
+func NewWithCancel(parent context.Context, options ...Option) (*Context, context.CancelFunc) {
+	c, release := create(parent, options)
+	if release == nil {
+		// 没有截止时间：只包一层取消，让释放的语义与带截止时间的相同
+		ctx, cancel := context.WithCancel(c.Context)
+		c.Context, release = ctx, cancel
+	}
+	return c, release
+}
+
+// create 按选项组装上下文；带截止时间时返回归还定时器与登记的函数，否则为 nil
+func create(parent context.Context, options []Option) (*Context, context.CancelFunc) {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -137,20 +157,20 @@ func New(parent context.Context, options ...Option) *Context {
 	if c.spanID == "" {
 		c.spanID = NewSpanID()
 	}
-	if !c.deadline.IsZero() {
-		// 截止时间与取消并存：到达截止时间时取消令牌触发（RFC-0003 规则 1）
-		ctx, cancel := context.WithDeadline(parent, c.deadline)
-		c.Context = ctx
-		expiry, deadline := &deadlineToken{}, c.deadline
-		c.expiry = expiry
-		// 截止时间先到时嵌入的上下文以 DeadlineExceeded 结束，令牌不必另起定时器；调用方先取消时 WithDeadline 的定时器随之停止，
-		// 这里为剩下的时间另起一个，让截止令牌照样在截止时间置位
-		context.AfterFunc(parent, func() {
-			cancel()
-			time.AfterFunc(time.Until(deadline), func() { expiry.fired.Store(true) })
-		})
+	if c.deadline.IsZero() {
+		return c, nil
 	}
-	return c
+	// 截止时间与取消并存：到达截止时间时取消令牌触发（RFC-0003 规则 1）
+	ctx, cancel := context.WithDeadline(parent, c.deadline)
+	expiry := &deadlineToken{}
+	// 截止令牌用自己的定时器：调用方先取消时 WithDeadline 的定时器随之停止，令牌照样要在截止时间置位。不经 context.AfterFunc(parent)
+	// 等 parent 取消后再起定时器：那个登记要到 parent 取消才注销，长寿命的 parent 上每建一个上下文就多留一个
+	timer := time.AfterFunc(time.Until(c.deadline), func() { expiry.fired.Store(true) })
+	c.Context, c.expiry = ctx, expiry
+	return c, func() {
+		timer.Stop()
+		cancel()
+	}
 }
 
 // Background 创建没有父取消的上下文。
@@ -224,7 +244,7 @@ func (c *Context) GetBaggage(key string) (string, bool) {
 func (c *Context) WithBaggage(key, value string) *Context {
 	mustBaggageKey(key)
 	if !primitives.IsBaggageEntryAcceptable(key, value) {
-		panic(&primitives.FrameworkError{Code: primitives.ErrorCodeInvalidArgument, Message: fmt.Sprintf("The value of the baggage key '%s' must be non-empty, at most %d UTF-16 code units long and free of control characters.", key, primitives.MaxBaggageValueLength)})
+		panic(primitives.NewFrameworkError(primitives.ErrorCodeInvalidArgument, "The value of the baggage key '%s' must be non-empty, at most %d UTF-16 code units long and free of control characters.", key, primitives.MaxBaggageValueLength))
 	}
 	derived := *c
 	derived.baggage = c.Baggage()
@@ -354,6 +374,6 @@ func randomHex(n int) string {
 // mustBaggageKey 校验 Baggage 键，不合法即 panic（编程错误）。
 func mustBaggageKey(key string) {
 	if !primitives.IsBaggageKeyWellFormed(key) {
-		panic(&primitives.FrameworkError{Code: primitives.ErrorCodeInvalidArgument, Message: fmt.Sprintf("The baggage key '%s' must match xihan.<name>.", key)})
+		panic(primitives.NewFrameworkError(primitives.ErrorCodeInvalidArgument, "The baggage key '%s' must match xihan.<name>.", key))
 	}
 }

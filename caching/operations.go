@@ -2,6 +2,7 @@ package caching
 
 import (
 	"encoding/base64"
+	"errors"
 	"strconv"
 	"time"
 
@@ -86,7 +87,9 @@ type RemovedManyResponse struct {
 	Removed []bool `json:"removed"`
 }
 
-// RegisterOperations 把 Store 暴露成操作集：九个 internal、不对外发布的操作。
+// RegisterOperations 把 Store 暴露成操作集：九个 internal、不对外发布的操作。九个操作都先在这里按子系统规则校验键
+// （批量操作带出错项的下标）、再校验选项、再解码 base64，然后才调 Store，不指望 Store 实现自己校验
+// （provider/caching-distributed.md §2、§4）；Store 返回的错误是（或包着）*primitives.Error 时原样交给宿主，别的按后端不可用。
 func RegisterOperations(registry *operation.Registry, store Store) error {
 	adapter := &operations{store: store}
 	if err := operation.Add(registry, contract(OperationGet), operation.HandlerFunc[GetRequest, GetResponse](adapter.get), nil, ""); err != nil {
@@ -128,6 +131,9 @@ type operations struct {
 
 // get 实现 cache-entries.get。
 func (o *operations) get(ctx *invocation.Context, request GetRequest) primitives.Result[GetResponse] {
+	if err := ValidateKey(request.Key); err != nil {
+		return primitives.Fail[GetResponse](err)
+	}
 	value, found, err := o.store.Get(ctx, request.Key)
 	if err != nil {
 		return primitives.Fail[GetResponse](storeError(err))
@@ -166,6 +172,9 @@ func (o *operations) tryAdd(ctx *invocation.Context, request SetRequest) primiti
 
 // remove 实现 cache-entries.remove。
 func (o *operations) remove(ctx *invocation.Context, request RemoveRequest) primitives.Result[RemovedResponse] {
+	if err := ValidateKey(request.Key); err != nil {
+		return primitives.Fail[RemovedResponse](err)
+	}
 	removed, err := o.store.Remove(ctx, request.Key)
 	if err != nil {
 		return primitives.Fail[RemovedResponse](storeError(err))
@@ -173,8 +182,11 @@ func (o *operations) remove(ctx *invocation.Context, request RemoveRequest) prim
 	return primitives.Ok(RemovedResponse{Removed: removed})
 }
 
-// tryRemove 实现 cache-entries.try-remove。
+// tryRemove 实现 cache-entries.try-remove：先校验键，再解码期望值。
 func (o *operations) tryRemove(ctx *invocation.Context, request TryRemoveRequest) primitives.Result[RemovedResponse] {
+	if err := ValidateKey(request.Key); err != nil {
+		return primitives.Fail[RemovedResponse](err)
+	}
 	expected, err := decodeValue(OperationTryRemove, "$.expected", request.Expected)
 	if err != nil {
 		return primitives.Fail[RemovedResponse](err)
@@ -205,8 +217,11 @@ func (o *operations) tryRefresh(ctx *invocation.Context, request TryRefreshReque
 	return primitives.Ok(RefreshedResponse{Refreshed: refreshed})
 }
 
-// getMany 实现 cache-entries.get-many：空数组不触后端，响应数组与 keys 等长（空时是 []，不是 null）。
+// getMany 实现 cache-entries.get-many：全部键先校验（出错项带 index）；空数组不触后端，响应数组与 keys 等长（空时是 []，不是 null）。
 func (o *operations) getMany(ctx *invocation.Context, request KeysRequest) primitives.Result[GetManyResponse] {
+	if err := ValidateKeys(request.Keys); err != nil {
+		return primitives.Fail[GetManyResponse](err)
+	}
 	values := make([]*string, 0, len(request.Keys))
 	if len(request.Keys) == 0 {
 		return primitives.Ok(GetManyResponse{Values: values})
@@ -245,8 +260,11 @@ func (o *operations) setMany(ctx *invocation.Context, request SetManyRequest) pr
 	return primitives.Ok(Empty{})
 }
 
-// removeMany 实现 cache-entries.remove-many：空数组不触后端，响应数组与 keys 等长。
+// removeMany 实现 cache-entries.remove-many：全部键先校验（出错项带 index）；空数组不触后端，响应数组与 keys 等长。
 func (o *operations) removeMany(ctx *invocation.Context, request KeysRequest) primitives.Result[RemovedManyResponse] {
+	if err := ValidateKeys(request.Keys); err != nil {
+		return primitives.Fail[RemovedManyResponse](err)
+	}
 	if len(request.Keys) == 0 {
 		return primitives.Ok(RemovedManyResponse{Removed: []bool{}})
 	}
@@ -294,9 +312,11 @@ func decodeValue(id, path, encoded string) ([]byte, *primitives.Error) {
 	return value, nil
 }
 
-// storeError 把 Store 的错误转成原语层错误：*primitives.Error 原样，其他按后端不可用。
+// storeError 把 Store 的错误转成原语层错误：是（或用 %w 包着）*primitives.Error 的取出它原样返回，其他按后端不可用。
+// 用 errors.As 而不是类型断言：Store 实现给错误加一层上下文（fmt.Errorf("redis: %w", err)）是常事，不能因此把校验或容量的错误报成后端不可用
 func storeError(err error) *primitives.Error {
-	if typed, ok := err.(*primitives.Error); ok {
+	var typed *primitives.Error
+	if errors.As(err, &typed) {
 		return typed
 	}
 	return Unavailable(err.Error())

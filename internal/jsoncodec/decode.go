@@ -129,7 +129,7 @@ func (d *decoder) value(value *jsontext.Value, target reflect.Value, path string
 		if target.Type() == numberType {
 			text := value.Text
 			if value.Kind == jsontext.String {
-				if !validNumber(text) {
+				if !jsontext.IsNumber(text) {
 					return &Problem{Path: path}
 				}
 			} else if value.Kind != jsontext.Number {
@@ -370,10 +370,4 @@ func settableField(target reflect.Value, index []int) (reflect.Value, bool) {
 		target = target.Field(step)
 	}
 	return target, true
-}
-
-// validNumber 判断文本是不是合法的 JSON 数字
-func validNumber(text string) bool {
-	value, problem := jsontext.Parse([]byte(text))
-	return problem == nil && value.Kind == jsontext.Number && len(text) == value.End-value.Start
 }

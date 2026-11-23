@@ -1,5 +1,6 @@
 // Package operation 是操作契约与 XGI 消息（RFC-0011）：业务以操作为单位声明，调用器让它经过完整管道并在 handle 阶段执行；
-// 请求与响应用 encoding/json 编解码，JSON 是 XGI 的规范编码。
+// JSON 是 XGI 的规范编码：请求载荷先过共同的 JSON 读取检查（internal/jsontext），再按请求类型解码（internal/jsoncodec，
+// RFC-0011 规则 2：成员名区分大小写、重复成员拒绝、报第一处不符的路径），不交给 encoding/json；响应用 encoding/json 写出。
 package operation
 
 import (
@@ -8,11 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/xihanfun/framework-spec/conformance/rules"
 
 	"github.com/xihanfun/framework-sdk-go/internal/jsoncodec"
 	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
@@ -71,6 +73,23 @@ func InvalidPayload(id, reason string) *primitives.Error {
 	return primitives.Validation(ErrorCodeInvalidPayload, MessageInvalidPayload, map[string]any{"id": id, "reason": reason})
 }
 
+// UnhandledException 创建调用里未处理的 panic（.NET 的未处理异常）的错误（RFC-0011 规则 5）：KERNEL_UNEXPECTED_001 +
+// kernel.invocation.unhandled_exception，没有参数。cause 是 recover 得到的值，或让响应写不出的错误：它是（或包着）FrameworkError 时
+// 那个错误作为内部错误带上；其余的原因不进错误，文本可能含路径、连接串，由调用方写进日志
+func UnhandledException(cause any) *primitives.Error {
+	var inner *primitives.Error
+	var framework *primitives.FrameworkError
+	if err, ok := cause.(error); ok && errors.As(err, &framework) {
+		inner = framework.ToError()
+	}
+	return primitives.Unexpected(ErrorCodeUnexpected, invocation.MessageUnhandledException, nil, inner)
+}
+
+// notFound 创建操作未登记的错误：KERNEL_NOTFOUND_001 + kernel.operation.unknown，参数 {id}
+func notFound(id string) *primitives.Error {
+	return primitives.NotFound(ErrorCodeNotFound, MessageNotFound, map[string]any{"id": id})
+}
+
 // Capacity 是登记表的容量。
 const Capacity = 10000
 
@@ -84,11 +103,9 @@ const (
 	ExposeAI = "ai"
 )
 
-// idPattern 是操作 ID 文法 <resource>.<verb>。
-var idPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*\.[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
-
-// IsID 判断操作 ID 是否符合 <resource>.<verb>。
-func IsID(id string) bool { return idPattern.MatchString(id) }
+// IsID 判断操作 ID 是否符合 <resource>.<verb>（conventions/operation-ids.md）：文法只有一致性模块的 rules.IsOperationID 这一份，
+// 清单的 contributes.operations 用的也是它。
+func IsID(id string) bool { return rules.IsOperationID(id) }
 
 // Contract 是操作契约：ID、稳定性、暴露的协议与授权要求（permission 与 policy 二选一）。
 type Contract struct {
@@ -168,12 +185,7 @@ func (d *Descriptor) Execute(ctx *invocation.Context, payload []byte) Response {
 func encodeResponse(ctx *invocation.Context, id string, response any) (encoded []byte, failure *primitives.Error) {
 	fail := func(cause any) {
 		slog.Default().Error("the response of an operation could not be encoded", "operation", id, "traceId", ctx.TraceID(), "error", fmt.Sprint(cause))
-		var inner *primitives.Error
-		var framework *primitives.FrameworkError
-		if err, ok := cause.(error); ok && errors.As(err, &framework) {
-			inner = framework.ToError()
-		}
-		encoded, failure = nil, primitives.Unexpected(ErrorCodeUnexpected, invocation.MessageUnhandledException, nil, inner)
+		encoded, failure = nil, UnhandledException(cause)
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -201,10 +213,10 @@ func NewRegistry() *Registry { return &Registry{descriptors: map[string]*Descrip
 // 与 KERNEL_OPERATION_002（kernel.operation.registry_full，参数 {capacity}），与 .NET OperationRegistry 一致
 func Add[Req, Res any](registry *Registry, contract Contract, handler Handler[Req, Res], schema *Schema, owner string) error {
 	if !IsID(contract.ID) {
-		return &primitives.FrameworkError{Code: primitives.ErrorCodeInvalidArgument, Message: fmt.Sprintf("The operation ID '%s' must match <resource>.<verb>.", contract.ID)}
+		return primitives.NewFrameworkError(primitives.ErrorCodeInvalidArgument, "The operation ID '%s' must match <resource>.<verb>.", contract.ID)
 	}
 	if contract.Permission != "" && contract.Policy != "" {
-		return &primitives.FrameworkError{Code: primitives.ErrorCodeInvalidArgument, Message: fmt.Sprintf("The operation '%s' must declare either a permission or a policy.", contract.ID)}
+		return primitives.NewFrameworkError(primitives.ErrorCodeInvalidArgument, "The operation '%s' must declare either a permission or a policy.", contract.ID)
 	}
 	if owner == "" {
 		owner = pipeline.AppOwner
@@ -389,7 +401,7 @@ func (i *Invoker) Registry() *Registry { return i.registry }
 func (i *Invoker) Invoke(ctx *invocation.Context, request Request) Response {
 	descriptor, ok := i.registry.Get(request.ID)
 	if !ok {
-		return Response{Outcome: primitives.Fail[primitives.Unit](primitives.NotFound(ErrorCodeNotFound, MessageNotFound, map[string]any{"id": request.ID}))}
+		return Response{Outcome: primitives.Fail[primitives.Unit](notFound(request.ID))}
 	}
 	state := &call{descriptor: descriptor, request: request, raw: true}
 	state.terminal = func(ctx *invocation.Context) primitives.Result[primitives.Unit] {
@@ -435,7 +447,7 @@ func (c *call) decodeOnce() *primitives.Error {
 func Invoke[Req, Res any](invoker *Invoker, ctx *invocation.Context, id string, request Req) primitives.Result[Res] {
 	descriptor, ok := invoker.registry.Get(id)
 	if !ok {
-		return primitives.Fail[Res](primitives.NotFound(ErrorCodeNotFound, MessageNotFound, map[string]any{"id": id}))
+		return primitives.Fail[Res](notFound(id))
 	}
 	handler, ok := descriptor.handler.(Handler[Req, Res])
 	if !ok {
@@ -477,12 +489,7 @@ func observe(ctx *invocation.Context, next pipeline.Step) (outcome primitives.Re
 			id = state.descriptor.Contract.ID
 		}
 		slog.Default().Error("an operation panicked", "operation", id, "traceId", ctx.TraceID(), "panic", fmt.Sprint(recovered), "stack", string(debug.Stack()))
-		var inner *primitives.Error
-		var framework *primitives.FrameworkError
-		if err, ok := recovered.(error); ok && errors.As(err, &framework) {
-			inner = framework.ToError()
-		}
-		outcome = primitives.Fail[primitives.Unit](primitives.Unexpected(ErrorCodeUnexpected, invocation.MessageUnhandledException, nil, inner))
+		outcome = primitives.Fail[primitives.Unit](UnhandledException(recovered))
 	}()
 	return next(ctx)
 }
@@ -521,7 +528,8 @@ func noResponse(id string) *primitives.Error {
 func dispatch(ctx *invocation.Context) primitives.Result[primitives.Unit] {
 	state, ok := current(ctx)
 	if !ok {
-		return primitives.Fail[primitives.Unit](primitives.NotFound(ErrorCodeNotFound, MessageNotFound, nil))
+		// 上下文里没有这次调用：中间件把不是由它收到的上下文派生的上下文传给了 next，没有可报的操作 ID，id 为空
+		return primitives.Fail[primitives.Unit](notFound(""))
 	}
 	return state.terminal(ctx)
 }

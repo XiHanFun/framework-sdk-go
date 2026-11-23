@@ -129,10 +129,10 @@ func RegisterDefaultTemplates(templates map[string]string) {
 	defer defaultTemplates.Unlock()
 	for key, template := range templates {
 		if !IsMessageKey(key) {
-			panic(&FrameworkError{Code: ErrorCodeInvalidArgument, Message: "The message key '" + key + "' of a default template is not valid."})
+			panic(NewFrameworkError(ErrorCodeInvalidArgument, "The message key '%s' of a default template is not valid.", key))
 		}
 		if existing, ok := defaultTemplates.values[key]; ok && existing != template {
-			panic(&FrameworkError{Code: ErrorCodeInvalidArgument, Message: "The default template of '" + key + "' is already registered with another text."})
+			panic(NewFrameworkError(ErrorCodeInvalidArgument, "The default template of '%s' is already registered with another text.", key))
 		}
 		defaultTemplates.values[key] = template
 	}

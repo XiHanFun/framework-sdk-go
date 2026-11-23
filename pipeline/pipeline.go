@@ -152,7 +152,7 @@ func (b *Builder) UseNamedInstance(instance string, middleware Middleware, stage
 // add 登记一个中间件：阶段必须合法；同一类型的默认实例只登记一次、命名实例的名字在类型内唯一（RFC-0004 规则 7），不合即 panic
 func (b *Builder) add(middleware Middleware, instance string, stage primitives.PipelineStage, placement Placement, owner string) *Builder {
 	if !stage.IsValid() {
-		panic(&primitives.FrameworkError{Code: ErrorCodeUnknownStage, Message: fmt.Sprintf("Unknown pipeline stage '%d'.", int(stage))})
+		panic(primitives.NewFrameworkError(ErrorCodeUnknownStage, "Unknown pipeline stage '%d'.", int(stage)))
 	}
 	if owner == "" {
 		owner = AppOwner
@@ -348,7 +348,7 @@ func topologicalSort(members []*registration, edges [][2]*registration, stage pr
 			for _, registration := range remaining {
 				stuck = append(stuck, "'"+registration.descriptor.Display()+"'")
 			}
-			return nil, &primitives.FrameworkError{Code: ErrorCodeCycle, Message: fmt.Sprintf("Middleware ordering constraints in stage '%s' form a cycle: %s.", stage.ManifestName(), strings.Join(stuck, ", "))}
+			return nil, primitives.NewFrameworkError(ErrorCodeCycle, "Middleware ordering constraints in stage '%s' form a cycle: %s.", stage.ManifestName(), strings.Join(stuck, ", "))
 		}
 		node := remaining[picked]
 		remaining = append(remaining[:picked], remaining[picked+1:]...)
@@ -362,14 +362,14 @@ func topologicalSort(members []*registration, edges [][2]*registration, stage pr
 
 // registrationError 创建登记错误（KERNEL_PIPELINE_003）；消息是 .NET 的英文原文，逐字相同（ADR-0236）
 func registrationError(message string) error {
-	return &primitives.FrameworkError{Code: ErrorCodeRegistration, Message: message}
+	return primitives.NewFrameworkError(ErrorCodeRegistration, "%s", message)
 }
 
 // ParseStage 解析清单里的阶段名；未知阶段返回 KERNEL_PIPELINE_002。
 func ParseStage(name string) (primitives.PipelineStage, error) {
 	stage, ok := primitives.ParsePipelineStage(name)
 	if !ok {
-		return 0, &primitives.FrameworkError{Code: ErrorCodeUnknownStage, Message: fmt.Sprintf("Unknown pipeline stage '%s'.", name)}
+		return 0, primitives.NewFrameworkError(ErrorCodeUnknownStage, "Unknown pipeline stage '%s'.", name)
 	}
 	return stage, nil
 }

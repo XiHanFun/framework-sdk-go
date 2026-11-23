@@ -41,7 +41,7 @@ func (s Stability) IsValid() bool { return s >= 0 && int(s) < len(stabilityNames
 // MarshalText 按小写名编码。
 func (s Stability) MarshalText() ([]byte, error) {
 	if !s.IsValid() {
-		return nil, &FrameworkError{Code: ErrorCodeInvalidArgument, Message: s.String() + " is not a stability."}
+		return nil, NewFrameworkError(ErrorCodeInvalidArgument, "%s is not a stability.", s.String())
 	}
 	return []byte(s.String()), nil
 }
@@ -50,7 +50,7 @@ func (s Stability) MarshalText() ([]byte, error) {
 func (s *Stability) UnmarshalText(text []byte) error {
 	stability, ok := ParseStability(string(text))
 	if !ok {
-		return &FrameworkError{Code: ErrorCodeInvalidArgument, Message: fmt.Sprintf("'%s' is not a stability.", text)}
+		return NewFrameworkError(ErrorCodeInvalidArgument, "'%s' is not a stability.", text)
 	}
 	*s = stability
 	return nil

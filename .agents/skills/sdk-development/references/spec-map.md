@@ -15,12 +15,36 @@
 
 ## 规范规则在一致性模块里的 Go 实现
 
-`github.com/xihanfun/framework-spec/conformance/rules` 是规范文法与判定的 Go 实现，由向量验证。SDK 已经调用的有这些，新代码用到同样的判定时照样调用，与规范的表保持同一份：
+`github.com/xihanfun/framework-spec/conformance/rules` 是规范文法与判定的 Go 实现，由向量验证。SDK 对它有两种用法，以当前代码为准（`grep -rn "rules\." --include=*.go . | grep -v "^./spec"`）；新代码用到某个判定时先看 `rules` 里有没有，有就调用，与规范的表保持同一份。
 
-- 空白字符集 `IsWhitespace`（RFC-0001「空白字符」，`Error` 的自由文本与握手行共用）。
-- 握手行与端点 `ParseHandshakeLine`、`ParseEndpoint`；回调端点列表 `ParseHostAddresses`、`SelectHostEndpoint`。
+### SDK 直接调用 rules 的
+
+- 空白字符集 `IsWhitespace`（RFC-0001「空白字符」）：`primitives` 里 `Error` 的自由文本、`plugin` 的端点地址、`caching` 的键。
+- 操作 ID `IsOperationID`（`conventions/operation-ids.md`）：`operation.IsID` 与 `manifest` 的 `contributes.operations` 都是它，SDK 里没有另一份正则。
+- 主题 `IsTopic`（RFC-0009）：`plugin` 核对订阅声明。
+- 协议版本协商 `NegotiateVersion`：`plugin` 的 Handshake。
+- 握手行与端点 `ParseHandshakeLine`、`ParseEndpoint`；选回调端点 `SelectHostEndpoint`。
 - 截止时间 `ParseDeadline`、`FormatDeadline`、`EffectiveDeadline`。
-- 回调：权限与阶段 `CallbackPermission`、`CallbackPhase`，失败的映射 `MapCallbackStatus`、`StatusReason`；读入对方写来的错误 `ReadProtoError`、`ReadProtoStatus`、`ReadDetails`。
-- JSON 文本的共同检查 `CheckJSONText`、`HasNoDuplicateMembers`（`internal/jsontext` 与规则包各自回放同一份 `json-text.json`）；模板占位符 `Placeholders`。
+- 回调：权限与阶段 `CallbackPermission`、`CallbackPhase`，失败的映射 `MapCallbackStatus`；读入对方写来的错误 `ReadProtoError`、`ReadProtoStatus`。
+
+`ParseHostAddresses`、`ReadDetails`、`StatusReason` 没有被 SDK 直接调用：它们分别在 `SelectHostEndpoint`、`ReadProtoError`、`MapCallbackStatus` 里面起作用。
+
+### SDK 自己实现、靠回放向量验证的
+
+这些判定 `rules` 里也有对应的函数，SDK 没有调用它，而是自己实现并回放同一份向量（测试名见 `vectors_test.go` 的 `replayedVectors`）；改它们时以向量为准，不拿 `rules` 的实现当事实源。
+
+| 判定 | SDK 的实现 | 向量 |
+| --- | --- | --- |
+| 错误码文法与 KIND | `primitives.IsErrorCode`、`ErrorCodeKind` | `primitives/error-codes.json` |
+| Baggage 键的文法、登记表与值 | `primitives.IsBaggageKeyWellFormed`、`IsBaggageKeyRegistered`、`IsBaggageValueAcceptable` | `primitives/baggage-keys.json` |
+| 消息键、模板占位符与格式化 | `primitives.IsMessageKey`、`Placeholders`、`FormatMessage` 一族 | `primitives/message-templates.json`、`primitives/kernel-messages.json` |
+| 生命周期迁移 | `primitives.LifecycleState.CanTransitionTo` | `primitives/lifecycle-transitions.json` |
+| `Result` 与 `Error` 的线上编码 | `primitives` 的 `MarshalJSON` / `UnmarshalJSON` | `primitives/wire-encoding.json` |
+| traceparent | `invocation.ParseTraceParent`、`Context.TraceParent` | `primitives/trace-context.json` |
+| 清单 ID、能力 ID 与能力依赖 | `manifest.IsManifestID`、`IsCapabilityID` 与读取 | `manifest/manifests.json`、`primitives/capability-requirements.json` |
+| 管道阶段与排序 | `primitives.PipelineStage`、`pipeline.Builder` | `pipeline/ordering.json` |
+| JSON 文本的共同检查 | `internal/jsontext.Parse` / `Check` | `primitives/json-text.json` |
+
+测试里拿 `rules` 当独立实现对照的有：`rules.CheckJSONText`（`internal/jsontext` 的向量回放逐例比较两边的结果）、`rules.HasNoDuplicateMembers` 与 `rules.Placeholders`（`primitives`、`operation` 的向量回放）。
 
 规则包不实现模板的格式化，格式化结果以 `message-templates.json` 为准。

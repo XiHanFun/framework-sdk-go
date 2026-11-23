@@ -147,6 +147,18 @@ func TestDecodeRangesAndTypes(t *testing.T) {
 	if value, path := problemOf[struct{ Data []byte }](t, `{"data":"aGk="}`); path != "" || value.Data != nil {
 		t.Errorf("member names are case-sensitive: %v at %q", value, path)
 	}
+	// 落在 json.Number 上的字符串必须整个是一个 JSON 数字：带首尾空白的不算
+	type numbered struct {
+		N json.Number `json:"n"`
+	}
+	if value, path := problemOf[numbered](t, `{"n":"12.50"}`); path != "" || value.N != "12.50" {
+		t.Errorf("a number in a string: %v at %q", value, path)
+	}
+	for _, text := range []string{`" 1"`, `"1 "`, `"\t1"`, `"+1"`, `"01"`, `""`} {
+		if _, path := problemOf[numbered](t, `{"n":`+text+`}`); path != "$.n" {
+			t.Errorf("%s is not a JSON number, got the problem at %q", text, path)
+		}
+	}
 }
 
 type base struct {

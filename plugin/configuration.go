@@ -108,7 +108,8 @@ func coerceString(text string, target reflect.Type) any {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
 		reflect.Float32, reflect.Float64:
-		if isJSONNumber(text) {
+		// 整个文本是一个 JSON 数字（RFC 8259）才转：不带首尾空白、正号与前导零，NaN 与 Infinity 不算
+		if jsontext.IsNumber(text) {
 			return json.Number(text)
 		}
 	case reflect.Bool:
@@ -120,12 +121,6 @@ func coerceString(text string, target reflect.Type) any {
 		}
 	}
 	return text
-}
-
-// isJSONNumber 判断文本整个是一个 JSON 数字（RFC 8259）：不带首尾空白、正号与前导零，NaN 与 Infinity 不算。
-func isJSONNumber(text string) bool {
-	value, problem := jsontext.Parse([]byte(text))
-	return problem == nil && value.Kind == jsontext.Number && value.End-value.Start == len(text)
 }
 
 // fieldFor 按成员名找结构体字段（含嵌入结构体提升的字段），返回字段的 JSON 名：名字完全相同的优先，
