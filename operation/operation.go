@@ -270,6 +270,13 @@ func (r *Registry) List() []*Descriptor {
 	return descriptors
 }
 
+// Len 返回已登记的操作数（不超过 Capacity）；只要个数时用它，不必为此 List 一遍。
+func (r *Registry) Len() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.descriptors)
+}
+
 // decode 解码请求载荷（RFC-0011 规则 2，ADR-0236）：空载荷等价于 {}；先过共同的 JSON 读取检查，语法错误（含只有空白、BOM、嵌套超过 64 层、
 // 孤立的代理项）的 reason 是 $，任何一层的重复成员写第一处重复的路径；载荷是 null 时 reason 是 $；再按请求类型解码，按文本顺序报第一处
 // 类型不符的路径，带 xihan:"required" 的成员缺少时在所在对象结束时报该对象的路径。都是 KERNEL_VALIDATION_001

@@ -142,3 +142,29 @@ func TestExposeNamesMatchTheProtocol(t *testing.T) {
 		t.Errorf("expose %v", descriptor.Contract.Expose)
 	}
 }
+
+// TestRegistryLenCountsRegistrations 核对 Registry.Len：只数登记成功的操作，被拒绝的登记（ID 不合法、重复）不计
+func TestRegistryLenCountsRegistrations(t *testing.T) {
+	registry := operation.NewRegistry()
+	if registry.Len() != 0 {
+		t.Fatalf("an empty registry has %d operations", registry.Len())
+	}
+	handler := operation.HandlerFunc[struct{}, struct{}](func(*invocation.Context, struct{}) primitives.Result[struct{}] { return primitives.Ok(struct{}{}) })
+	for index, id := range []string{"orders.create", "orders.cancel", "order-lines.list"} {
+		if err := operation.Add(registry, operation.Contract{ID: id}, handler, nil, ""); err != nil {
+			t.Fatal(err)
+		}
+		if registry.Len() != index+1 || registry.Len() != len(registry.List()) {
+			t.Errorf("after %d registrations: Len %d, List %d", index+1, registry.Len(), len(registry.List()))
+		}
+	}
+	if err := operation.Add(registry, operation.Contract{ID: "orders.create"}, handler, nil, ""); err == nil {
+		t.Fatal("a duplicate must be refused")
+	}
+	if err := operation.Add(registry, operation.Contract{ID: "Orders.Create"}, handler, nil, ""); err == nil {
+		t.Fatal("a bad ID must be refused")
+	}
+	if registry.Len() != 3 {
+		t.Errorf("refused registrations are not counted: Len %d", registry.Len())
+	}
+}

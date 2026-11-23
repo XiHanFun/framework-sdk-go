@@ -222,7 +222,7 @@ func (s *service) Start(ctx context.Context, _ *pluginv1.StartRequest) (*pluginv
 		r.lifecycle.transition(primitives.Ready, nil)
 	}
 	state, _ := r.lifecycle.current()
-	r.logger.Info("started", "state", state.String(), "operations", len(r.invoker.Registry().List()), "subscriptions", len(r.subscriptions))
+	r.logger.Info("started", "state", state.String(), "operations", r.invoker.Registry().Len(), "subscriptions", len(r.subscriptions))
 	return &pluginv1.StartResponse{Status: ToStatus(outcome)}, nil
 }
 
