@@ -222,3 +222,29 @@ func TestValueModelRoundTrips(t *testing.T) {
 		t.Error("a function cannot be written")
 	}
 }
+
+// TestMarshalRejectsInvalidNumbers 核对 json.Number 写出前要整个是一个 JSON 数字（与 encoding/json 相同，空串写 0）：
+// 不是数字的文本原样写出会让整份 JSON 不合法，甚至夹带别的成员，所以报错、什么都不写
+func TestMarshalRejectsInvalidNumbers(t *testing.T) {
+	for text, want := range map[string]string{"": "0", "0": "0", "-12": "-12", "12.50": "12.50", "1e400": "1e400", "9007199254740993": "9007199254740993"} {
+		if encoded, err := Marshal(json.Number(text)); err != nil || string(encoded) != want {
+			t.Errorf("json.Number(%q): %s (%v), want %s", text, encoded, err, want)
+		}
+	}
+	for _, text := range []string{" 1", "1 ", "\t1", "+1", "01", "1.", "1e", "abc", "NaN", "Infinity", `"1"`, `1,"admin":true`, "1}"} {
+		number := json.Number(text)
+		values := map[string]any{
+			"a bare number":      number,
+			"a member":           map[string]any{"n": number},
+			"an item":            []any{1, number},
+			"a field":            struct{ N json.Number }{number},
+			"a pointer":          &number,
+			"a typed collection": []json.Number{"1", number},
+		}
+		for name, value := range values {
+			if encoded, err := Marshal(value); err == nil {
+				t.Errorf("%s holding json.Number(%q) must not be written, got %s", name, text, encoded)
+			}
+		}
+	}
+}

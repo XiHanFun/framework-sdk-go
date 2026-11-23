@@ -57,7 +57,7 @@ var (
 
 // Marshal 按值模型写出一个值（Result 的值、Error 的细节，RFC-0001「Result」，ADR-0236）：整数原样（超出 int64 的无符号整数按浮点写），
 // float32 先换成 float64，浮点带小数点或指数，非有限值写成字符串；字符串只转义必须转义的字符（RFC-0010 的 JSON 字符串写法）；
-// 结构体、映射、切片与 json.Marshaler / encoding.TextMarshaler 照 encoding/json 的规则
+// json.Number 原样写出（空串写 0），不是合法的 JSON 数字时报错；结构体、映射、切片与 json.Marshaler / encoding.TextMarshaler 照 encoding/json 的规则
 func Marshal(value any) ([]byte, error) {
 	var encoder encoder
 	if err := encoder.value(reflect.ValueOf(value), 0); err != nil {
@@ -101,6 +101,11 @@ func (e *encoder) value(value reflect.Value, depth int) error {
 			text := value.String()
 			if text == "" {
 				text = "0"
+			}
+			// json.Number 是原样写出的文本，写之前核对它整个是一个 JSON 数字（encoding/json 也这样）：否则写出的不是合法的 JSON，
+			// 文本里的逗号、引号还能夹带出别的成员
+			if !jsontext.IsNumber(text) {
+				return fmt.Errorf("the json.Number %q is not a valid JSON number", text)
 			}
 			e.buffer = append(e.buffer, text...)
 			return nil

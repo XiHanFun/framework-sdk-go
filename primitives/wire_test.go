@@ -196,3 +196,22 @@ func TestWireNumbersFollowTheValueModel(t *testing.T) {
 		t.Error("1.5 is not an integer")
 	}
 }
+
+// TestInvalidNumbersAreNotWrittenToTheWire 核对线上编码遇到不是合法 JSON 数字的 json.Number 时报错：原样写出会让整份文本不合法，
+// 文本里的逗号与引号还能夹带出别的成员
+func TestInvalidNumbersAreNotWrittenToTheWire(t *testing.T) {
+	injected := json.Number(`1,"admin":true`)
+	failure := primitives.Literal("KERNEL_UNEXPECTED_001", "x", map[string]any{"n": injected}, nil)
+	if encoded, err := failure.MarshalJSON(); err == nil {
+		t.Errorf("an error with an invalid number in its details must not be written, got %s", encoded)
+	}
+	if encoded, err := json.Marshal(primitives.Ok(map[string]any{"n": injected})); err == nil {
+		t.Errorf("a result with an invalid number in its value must not be written, got %s", encoded)
+	}
+	if encoded, err := json.Marshal(primitives.Some(json.Number(" 1"))); err == nil {
+		t.Errorf("a maybe holding an invalid number must not be written, got %s", encoded)
+	}
+	if encoded, err := json.Marshal(primitives.Ok(map[string]any{"n": json.Number("12.50")})); err != nil || string(encoded) != `{"ok":true,"value":{"n":12.50}}` {
+		t.Errorf("a valid number is written as it is: %s (%v)", encoded, err)
+	}
+}
