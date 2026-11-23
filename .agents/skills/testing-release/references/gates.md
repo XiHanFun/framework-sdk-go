@@ -11,6 +11,7 @@
 | 格式与静态检查 | `test -z "$(gofmt -l .)"`、`go vet ./...` | `gofmt -w <文件>`；按 vet 的提示改代码 |
 | staticcheck（只在 `ubuntu-latest`） | `go install` 钉死的版本后 `staticcheck ./...` | 按提示改代码（未使用的代码删掉，不加忽略指令绕过）；本机照 ci.yml 的版本安装 |
 | 测试 | `go test ./...`，Linux 上加 `-race`（需要 cgo），Windows 上不带 | 修代码或补测试 |
+| 依赖漏洞扫描（单独的作业，最新稳定工具链） | `go install` 钉死的版本后 `govulncheck ./...` | 升到修复了漏洞的依赖版本（`go get <模块>@<版本>` 后 `go mod tidy`），再跑全部测试；不加忽略 |
 
 矩阵是 `ubuntu-latest` 与 `windows-latest`；生成物只取决于 `plugin.proto` 与生成器的版本，安装 buf 与生成物检查只在 `ubuntu-latest` 上跑，Windows 任务不编译 buf；staticcheck 也只在 `ubuntu-latest` 上跑。触发条件是 `main`、`dev` 的 push，目标为 `main`、`dev` 的 PR，以及手动触发。
 

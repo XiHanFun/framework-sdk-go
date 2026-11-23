@@ -1,6 +1,6 @@
 name: CI
 
-# Go SDK 的门禁：生成物与规范一致（只在 ubuntu 上核对）、格式与静态检查（staticcheck 只在 ubuntu 上跑）、全部测试（含用黑盒运行器跑 examples/echo 与 examples/cache 的插件）。
+# Go SDK 的门禁：生成物与规范一致（只在 ubuntu 上核对）、格式与静态检查（staticcheck 只在 ubuntu 上跑）、依赖漏洞扫描（govulncheck，单独一个作业）、全部测试（含用黑盒运行器跑 examples/echo 与 examples/cache 的插件）。
 on:
   push:
     branches: [main, dev]
@@ -70,3 +70,23 @@ jobs:
       - name: 测试
         # -race 需要 cgo；Windows 运行器上不带
         run: go test ${{ runner.os == 'Linux' && '-race' || '' }} ./...
+
+  vulnerabilities:
+    # 漏洞扫描用最新的稳定工具链，不用 go.mod 的 go 指令：标准库的漏洞随工具链补丁修复，使用者用自己的工具链编译；
+    # 这里要拦的是依赖里代码调得到的漏洞。govulncheck 只在代码调得到漏洞时失败
+    name: 依赖漏洞扫描
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出
+        uses: actions/checkout@v5
+
+      - name: 安装 Go（最新稳定版）
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      # 版本钉死，升级时先在本机跑通再改这里
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.10.0
+          govulncheck ./...

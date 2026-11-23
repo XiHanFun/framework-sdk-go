@@ -17,6 +17,7 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 | buf、protoc-gen-go、protoc-gen-go-grpc | 版本以 `.github/workflows/ci.yml` 为准 | 从 `spec/plugin/plugin.proto` 生成 `plugin/v1` |
 | gofmt、go vet | Go 工具链自带 | 格式与静态检查 |
 | staticcheck | 版本以 `.github/workflows/ci.yml` 为准 | 静态检查（未使用的代码、可疑写法等） |
+| govulncheck | 版本以 `.github/workflows/ci.yml` 为准 | 依赖漏洞扫描：只在代码调得到漏洞时失败，CI 用最新稳定工具链单独一个作业跑 |
 | GitHub Actions | `ubuntu-latest` 与 `windows-latest` 矩阵；安装 buf、生成物检查与 staticcheck 只在 `ubuntu-latest` 上跑 | CI 门禁 |
 
 ## 开始前必须做
@@ -79,6 +80,7 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 | 格式 | `gofmt -l .` 输出为空 |
 | 静态检查 | `go vet ./...` 与 `staticcheck ./...`（照 `ci.yml`「staticcheck」一步的版本 `go install`） |
 | 测试 | `go test ./...`（Linux 上 CI 加 `-race`，它需要 cgo） |
+| 依赖漏洞扫描 | `govulncheck ./...`（照 `ci.yml`「govulncheck」一步的版本 `go install`；升依赖之后必跑。本机工具链不是最新补丁时会报标准库的漏洞，那些随工具链升级修复，要看的是依赖里的） |
 | 全部门禁 | `buf generate && test -z "$(git status --porcelain -- plugin/v1)" && test -z "$(gofmt -l .)" && go vet ./... && staticcheck ./... && go test ./...` |
 | 安装黑盒运行器 | `go install github.com/xihanfun/framework-spec/conformance/cmd/xihan-conformance@<go.mod 里一致性模块的版本>` |
 | 黑盒运行器 | `xihan-conformance plugin --dir <插件目录> --exclude echoes.crash --sample 'echoes.create={"text":"x"}'` |
