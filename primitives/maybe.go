@@ -1,6 +1,10 @@
 package primitives
 
-import "github.com/xihanfun/framework-sdk-go/internal/jsoncodec"
+import (
+	"fmt"
+
+	"github.com/xihanfun/framework-sdk-go/internal/jsoncodec"
+)
 
 // Maybe 是可能没有的值（RFC-0001 Maybe<T>）；零值即无值。线上编码：有值为值本身，无值为 null。
 type Maybe[T any] struct {
@@ -58,6 +62,22 @@ func MapMaybe[T, U any](m Maybe[T], f func(T) U) Maybe[U] {
 		return None[U]()
 	}
 	return Some(f(m.value))
+}
+
+// BindMaybe 把有值的 Maybe 交给返回 Maybe 的函数（RFC-0001 Maybe<T> 的 Bind）；无值原样传递，不调函数。
+func BindMaybe[T, U any](m Maybe[T], f func(T) Maybe[U]) Maybe[U] {
+	if !m.has {
+		return None[U]()
+	}
+	return f(m.value)
+}
+
+// String 便于日志：有值为 Some(值)，无值为 None，与 .NET 的 Maybe<T>.ToString 相同。
+func (m Maybe[T]) String() string {
+	if !m.has {
+		return "None"
+	}
+	return fmt.Sprintf("Some(%v)", m.value)
 }
 
 // isMaybe 让 Result 认出 Maybe：成功值只有是 Maybe 时才可以是 null
