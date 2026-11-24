@@ -15,6 +15,7 @@ var replayedVectors = []string{
 	"manifest/manifests.json",                 // manifest.TestManifestsFollowTheVectors
 	"operations/payload-reasons.json",         // operation.TestPayloadReasonsFollowTheVectors
 	"pipeline/ordering.json",                  // pipeline.TestPipelineOrderingFollowsTheVectors
+	"plugin/binding-properties.json",          // plugin.TestBindingPropertiesFollowTheVectors（reading；其余各节是宿主一侧的）
 	"plugin/callback-status.json",             // plugin.TestCallbackStatusFollowsTheVectors
 	"plugin/deadlines.json",                   // plugin.TestDeadlinesFollowTheVectors
 	"plugin/error-reading.json",               // plugin.TestErrorReadingFollowsTheVectors

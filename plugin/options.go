@@ -6,8 +6,10 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/xihanfun/framework-sdk-go/invocation"
@@ -177,11 +179,64 @@ type Health struct {
 	Error *primitives.Error
 }
 
-// Binding 是宿主解析后的资源绑定。
+// Binding 是宿主解析后的资源绑定（lifecycle.md §2、§7.2，ADR-0285）。主值与属性值可能是凭据，不要写进日志、错误与健康条目：
+// 它的调试输出（fmt 的各种动词与 slog）只带绑定名、类型与属性名，不带 Value 与属性值；encoding/json 等按字段反射的写出不在此列，
+// 照样带全部字段，放在未导出字段里再交给 fmt 也是。
 type Binding struct {
-	Name  string
-	Type  string
+	// Name 是清单 bindings 里声明的名字。
+	Name string
+	// Type 是资源类型（connection:relational、cache:distributed、queue、blob 等）。
+	Type string
+	// Value 是主值（连接串或地址）；来源只给了属性、没有主值时为空，这不是错误，运行时也不拿属性拼出一个主值。
 	Value string
+	// Properties 是绑定的其余属性：属性名到属性值，与宿主进程里的特性读到的相同。属性名区分大小写，运行时不折叠大小写、不改写，
+	// 也不核对文法与上限（那是宿主的事）；值为空的属性照样在表里；各项的先后没有含义。运行时交出的绑定没有属性时
+	// （含按较早的规范实现的宿主不发这个字段）是空表、不是 nil，表是这次配置自己的一份，改它不影响别处。
+	Properties map[string]string
+}
+
+// propertyNames 返回属性名，按升序：调试输出只带名字，次序固定。
+func (b Binding) propertyNames() []string {
+	names := make([]string, 0, len(b.Properties))
+	for name := range b.Properties {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// String 返回调试文本：绑定名、类型与按升序排列的属性名，不带主值与属性值（lifecycle.md §7.2）。
+func (b Binding) String() string {
+	return fmt.Sprintf("Binding{Name: %q, Type: %q, Properties: %q}", b.Name, b.Type, b.propertyNames())
+}
+
+// GoString 是 %#v 的输出：与 String 带同样的内容，不带主值与属性值，所以不是能还原出绑定的 Go 字面量。
+func (b Binding) GoString() string {
+	return fmt.Sprintf("plugin.Binding{Name: %q, Type: %q, Properties: %q}", b.Name, b.Type, b.propertyNames())
+}
+
+// Format 实现 fmt.Formatter，接管所有动词：不实现它时 %d 之类不经 String 的动词会按字段打印出主值与属性值。
+// %#v 写 GoString；%v、%+v、%s 按原来的标志、宽度与精度把 String 当字符串格式化，%q、%x、%X 同样作用在 String 上；
+// 其余动词写成 fmt 报错动词的样子，同样只带 String。%p 例外：fmt 先于任何方法处理它，用在不是指针的绑定上时按字段打印（go vet 会报这种写法）。
+func (b Binding) Format(state fmt.State, verb rune) {
+	switch verb {
+	case 'v':
+		if state.Flag('#') {
+			_, _ = io.WriteString(state, b.GoString())
+			return
+		}
+		// %v 与 %+v 按 %s 格式化：加号对字符串没有含义，宽度与减号照常起作用
+		_, _ = fmt.Fprintf(state, fmt.FormatString(state, 's'), b.String())
+	case 's', 'q', 'x', 'X':
+		_, _ = fmt.Fprintf(state, fmt.FormatString(state, verb), b.String())
+	default:
+		_, _ = fmt.Fprintf(state, "%%!%c(plugin.Binding=%s)", verb, b.String())
+	}
+}
+
+// LogValue 实现 slog.LogValuer：日志里的绑定是一个组，只有 name、type 与 properties（按升序排列的属性名），不带主值与属性值。
+func (b Binding) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("name", b.Name), slog.String("type", b.Type), slog.Any("properties", b.propertyNames()))
 }
 
 // Configuration 是 Configure 下发的内容。
@@ -190,7 +245,7 @@ type Configuration struct {
 	Section json.RawMessage
 	// GrantedPermissions 是宿主授予的权限；回调前的本地核对以它为准（invocation.md §5）。
 	GrantedPermissions []string
-	// Bindings 只含清单声明的绑定。
+	// Bindings 只含清单声明的绑定，按宿主下发的先后，每个连同它的属性（Binding.Properties）。
 	Bindings []Binding
 	// WorkDirectory 是宿主分配的可写工作目录。
 	WorkDirectory string

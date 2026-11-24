@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"io/fs"
 	"maps"
@@ -14,6 +15,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/xihanfun/framework-spec/conformance"
 	"github.com/xihanfun/framework-spec/conformance/rules"
@@ -250,6 +252,8 @@ func TestRuntimeMessagesFollowTheVectors(t *testing.T) {
 		switch reason.Reason {
 		case "the plugin reported a failure without an error", "{status}: {message}", "{type}":
 			// 宿主读插件的那一条不在 SDK 里；后两条由 rules.StatusReason 与 errorTypeName 写出，见别的测试
+		case "binding '{binding}' has more than 64 properties", "binding '{binding}' has a property name that is not valid", "the properties of binding '{binding}' exceed 262144 bytes":
+			// 宿主组装 Configure 请求时核对绑定属性的三条（lifecycle.md §2，ADR-0285）不在 SDK 里：SDK 不核对属性名的文法与上限
 		default:
 			text := strings.NewReplacer("{code}", "x", "{results}", "1", "{envelopes}", "2").Replace(reason.Reason)
 			if !slices.Contains(known, any(text)) {
@@ -295,6 +299,55 @@ func TestErrorReadingFollowsTheVectors(t *testing.T) {
 	}
 	if read == 0 {
 		t.Error("the vectors must have cases of the plugin reading the host")
+	}
+}
+
+// TestBindingPropertiesFollowTheVectors 回放 binding-properties.json 的 reading（lifecycle.md §7.2，ADR-0285）：每例的 hex 是宿主写出的
+// ConfigureRequest 字节，用生成的协议代码解码后经 Configure 交给配置回调，作者拿到的绑定逐项等于期望（名字、类型、主值、属性，
+// 含先后；没有属性时是空表、不是 nil）。同文件的 json（Wasm 载体）、names、limits 与 delivery 是宿主一侧的，SDK 不回放。
+func TestBindingPropertiesFollowTheVectors(t *testing.T) {
+	vectors, err := conformance.PluginBindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vectors.Reading) == 0 {
+		t.Fatal("the vectors must have reading cases")
+	}
+	for _, c := range vectors.Reading {
+		t.Run(c.Name, func(t *testing.T) {
+			encoded, err := hex.DecodeString(c.Hex)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := &pluginv1.ConfigureRequest{}
+			if err := proto.Unmarshal(encoded, request); err != nil {
+				t.Fatalf("the host's bytes must decode as a ConfigureRequest: %v", err)
+			}
+			h := start(t, defaultEnv())
+			ctx := deadline(t)
+			h.handshake(ctx)
+			configured, err := h.client.Configure(ctx, request)
+			if err != nil || !configured.GetStatus().GetOk() {
+				t.Fatalf("configure %v %v", configured, err)
+			}
+			got := read(h.seen, func() []Binding { return h.seen.configured.Bindings })
+			if len(got) != len(c.Bindings) {
+				t.Fatalf("the author received %d bindings, want %d", len(got), len(c.Bindings))
+			}
+			for index, want := range c.Bindings {
+				binding := got[index]
+				if binding.Name != want.Name || binding.Type != want.Type || binding.Value != want.Value {
+					t.Errorf("binding %d is '%s' of type '%s' with a value of %d bytes, want '%s' of type '%s' with a value of %d bytes", index, binding.Name, binding.Type, len(binding.Value), want.Name, want.Type, len(want.Value))
+				}
+				if binding.Properties == nil {
+					t.Errorf("binding '%s' must have an empty property table, not nil", want.Name)
+				}
+				// 失败信息只列属性名：属性值在真实的配置里是凭据，测试的输出也照同样的习惯
+				if !maps.Equal(binding.Properties, map[string]string(want.Properties)) {
+					t.Errorf("binding '%s' has the properties %q or different values, want %q", want.Name, slices.Sorted(maps.Keys(binding.Properties)), slices.Sorted(maps.Keys(want.Properties)))
+				}
+			}
+		})
 	}
 }
 

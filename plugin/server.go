@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"reflect"
 	"runtime/debug"
 	"slices"
@@ -180,10 +181,9 @@ func (s *service) Configure(ctx context.Context, request *pluginv1.ConfigureRequ
 	configuration := Configuration{
 		Section:            json.RawMessage(section),
 		GrantedPermissions: slices.Clone(request.GrantedPermissions),
-		WorkDirectory:      request.WorkDirectory,
-	}
-	for _, binding := range request.Bindings {
-		configuration.Bindings = append(configuration.Bindings, Binding{Name: binding.Name, Type: binding.Type, Value: binding.Value})
+		// 绑定连同属性交给作者；主值与属性值可能是凭据，运行时不把它们写进日志与错误（lifecycle.md §7.2）
+		Bindings:      bindingsOf(request.Bindings),
+		WorkDirectory: request.WorkDirectory,
 	}
 	outcome := primitives.Success()
 	if hook := r.opts.Hooks.Configure; hook != nil {
@@ -196,6 +196,22 @@ func (s *service) Configure(ctx context.Context, request *pluginv1.ConfigureRequ
 		r.logger.Error("configure failed", "code", outcome.Err().Code, "messageKey", outcome.Err().MessageKey)
 	}
 	return &pluginv1.ConfigureResponse{Status: ToStatus(outcome)}, nil
+}
+
+// bindingsOf 把 Configure 下发的绑定换成交给作者的绑定，保持先后（lifecycle.md §7.2，ADR-0285）：属性原样拷贝，
+// 属性名不折叠大小写、不核对文法与上限，没有属性时是空表；主值为空照常交出。
+func bindingsOf(delivered []*pluginv1.Binding) []Binding {
+	if len(delivered) == 0 {
+		return nil
+	}
+	bindings := make([]Binding, 0, len(delivered))
+	for _, binding := range delivered {
+		// 另建一张表而不是 maps.Clone：没有属性时也要是空表、不是 nil；拷贝之后作者改它碰不到请求消息
+		properties := make(map[string]string, len(binding.GetProperties()))
+		maps.Copy(properties, binding.GetProperties())
+		bindings = append(bindings, Binding{Name: binding.GetName(), Type: binding.GetType(), Value: binding.GetValue(), Properties: properties})
+	}
+	return bindings
 }
 
 // Start 调启动回调（lifecycle.md §7.3），只在 Configured 接受一次：成功后进入 Started，有健康回调就立即求一次并按结果进入
