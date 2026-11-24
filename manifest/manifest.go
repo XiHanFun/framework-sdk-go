@@ -51,7 +51,6 @@ var (
 	versionPattern      = regexp.MustCompile(`^[1-9][0-9]*$`)
 	requirementPattern  = regexp.MustCompile(`^([a-z][a-z0-9]*\.[a-z][a-z0-9-]*)@(\^?)([1-9][0-9]*)(\??)$`)
 	declarationPattern  = regexp.MustCompile(`^([a-z][a-z0-9]*\.[a-z][a-z0-9-]*)@([1-9][0-9]*)$`)
-	activationPattern   = regexp.MustCompile(`^(onStartup|onOperation:[a-z0-9.*-]+|onEvent:[a-z0-9.*-]+)$`)
 	permissionPattern   = regexp.MustCompile(`^(net\.outbound|fs\.read|fs\.write|capability):.+$`)
 	bindingNamePattern  = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 	bindingTypePattern  = regexp.MustCompile(`^[a-z]+(:[a-z]+)?$`)

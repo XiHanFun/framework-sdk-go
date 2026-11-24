@@ -103,8 +103,12 @@ const (
 	ExposeAI = "ai"
 )
 
-// IsID 判断操作 ID 是否符合 <resource>.<verb>（conventions/operation-ids.md）：文法只有一致性模块的 rules.IsOperationID 这一份，
-// 清单的 contributes.operations 用的也是它。
+// MaxIDLength 是操作 ID 的最大长度（conventions/operation-ids.md，ADR-0276）：文法只含 ASCII 字符，字符数就是字节数；
+// 与 .NET 的 OperationId.MaxLength 相同。
+const MaxIDLength = rules.MaxOperationIDLength
+
+// IsID 判断操作 ID 是否符合 <resource>.<verb> 且不超过 MaxIDLength 个字符（conventions/operation-ids.md，向量 primitives/operation-ids.json）：
+// 规则只有一致性模块的 rules.IsOperationID 这一份，清单的 contributes.operations 用的也是它。
 func IsID(id string) bool { return rules.IsOperationID(id) }
 
 // Contract 是操作契约：ID、稳定性、暴露的协议与授权要求（permission 与 policy 二选一）。
@@ -208,12 +212,12 @@ type Registry struct {
 // NewRegistry 创建空的登记表。
 func NewRegistry() *Registry { return &Registry{descriptors: map[string]*Descriptor{}} }
 
-// Add 登记一个操作。ID 不合法、permission 与 policy 同时给出是编程错误，返回 FrameworkError（PRIMITIVES_VALIDATION_001）；
+// Add 登记一个操作。ID 不合法（不合文法或超过 MaxIDLength 个字符）、permission 与 policy 同时给出是编程错误，返回 FrameworkError（PRIMITIVES_VALIDATION_001）；
 // 重复登记与登记表已满是登记失败，返回 *primitives.Error：KERNEL_OPERATION_001（kernel.operation.duplicate，参数 {id, owner}）
 // 与 KERNEL_OPERATION_002（kernel.operation.registry_full，参数 {capacity}），与 .NET OperationRegistry 一致
 func Add[Req, Res any](registry *Registry, contract Contract, handler Handler[Req, Res], schema *Schema, owner string) error {
 	if !IsID(contract.ID) {
-		return primitives.NewFrameworkError(primitives.ErrorCodeInvalidArgument, "The operation ID '%s' must match <resource>.<verb>.", contract.ID)
+		return primitives.NewFrameworkError(primitives.ErrorCodeInvalidArgument, "The operation ID '%s' must match <resource>.<verb> and be at most %d characters long.", contract.ID, MaxIDLength)
 	}
 	if contract.Permission != "" && contract.Policy != "" {
 		return primitives.NewFrameworkError(primitives.ErrorCodeInvalidArgument, "The operation '%s' must declare either a permission or a policy.", contract.ID)

@@ -240,8 +240,9 @@ func TestDuplicatesFollowTheWireEncodingVectors(t *testing.T) {
 		if decodeErr == nil {
 			t.Errorf("%s: %s must be rejected", c.Name, c.Text)
 		}
-		if rules.HasNoDuplicateMembers([]byte(c.Text)) == nil {
-			t.Errorf("%s: the reference rule must see the duplicate too", c.Name)
+		// 参照实现是 RFC-0001「JSON 文本」的共同读取检查（rules.CheckJSONText）：这些文本语法都对，问题只在重复成员
+		if problem := rules.CheckJSONText([]byte(c.Text)); problem == nil || problem.Syntax {
+			t.Errorf("%s: the reference rule must see the duplicate too, got %+v", c.Name, problem)
 		}
 	}
 }

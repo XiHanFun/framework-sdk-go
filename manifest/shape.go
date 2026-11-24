@@ -166,7 +166,8 @@ func buildRootShape() *objectShape {
 	}
 	permissions := list(text(permCodePattern.MatchString))
 	permissions.unique = true
-	// 操作 ID 的文法 <resource>.<verb>（RFC-0011，连字符只在字母数字之间）只有 rules.IsOperationID 这一份，operation.IsID 用的也是它
+	// 操作 ID 的文法 <resource>.<verb>（RFC-0011，连字符只在字母数字之间，整个 ID 不超过 128 个字符）只有 rules.IsOperationID 这一份，
+	// operation.IsID 用的也是它
 	contributions := &objectShape{
 		members: map[string]*valueShape{
 			"pipeline":    list(object(pipeline)),
@@ -176,7 +177,9 @@ func buildRootShape() *objectShape {
 			"health":      list(text(healthPattern.MatchString)),
 		},
 	}
-	activation := list(text(activationPattern.MatchString))
+	// 激活事件的文法（RFC-0002 解析规则 2 第 3 步，plugin/lifecycle.md §3）也只有 rules.IsActivationEvent 这一份：onOperation: 的模式是
+	// 操作 ID 的字符加 *，onEvent: 的模式是主题的字符加 *，所以只有它可以带下划线（ADR-0276）
+	activation := list(text(rules.IsActivationEvent))
 	activation.nonEmpty = true
 	return &objectShape{
 		members: map[string]*valueShape{

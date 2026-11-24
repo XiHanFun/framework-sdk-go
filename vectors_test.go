@@ -11,6 +11,7 @@ import (
 // replayedVectors 是本 SDK 的测试回放的向量文件（相对 vectors/，正斜杠分隔），注明回放它的测试；
 // 来源是 go.mod 钉住的一致性模块内嵌的那一份，测试经它的类型化入口读取。
 var replayedVectors = []string{
+	"caching/cache-keys.json",                 // caching.TestKeysFollowTheVectors
 	"manifest/manifests.json",                 // manifest.TestManifestsFollowTheVectors
 	"operations/payload-reasons.json",         // operation.TestPayloadReasonsFollowTheVectors
 	"pipeline/ordering.json",                  // pipeline.TestPipelineOrderingFollowsTheVectors
@@ -28,6 +29,7 @@ var replayedVectors = []string{
 	"primitives/kernel-messages.json",         // operation.TestKernelMessagesFollowTheVectors
 	"primitives/lifecycle-transitions.json",   // primitives.TestLifecycleTransitionsFollowTheVectors
 	"primitives/message-templates.json",       // primitives.TestMessageKeysFollowTheTemplateVectors 等
+	"primitives/operation-ids.json",           // operation.TestOperationIDsFollowTheVectors
 	"primitives/trace-context.json",           // invocation.TestTraceContextFollowsTheVectors
 	"primitives/wire-encoding.json",           // primitives.TestResultsFollowTheWireEncodingVectors 等
 	"provider/caching-distributed.json",       // caching.TestOperationsReplayTheVectors

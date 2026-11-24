@@ -6,7 +6,6 @@ package caching
 import (
 	"context"
 	"time"
-	"unicode"
 
 	"github.com/xihanfun/framework-spec/conformance/rules"
 
@@ -51,8 +50,9 @@ const (
 	MessageCapacityReached = "caching.remote.capacity_reached"
 )
 
-// MaxKeyLength 是键的最大长度。
-const MaxKeyLength = 512
+// MaxKeyLength 是键按 UTF-8 编码后的最大字节数（RFC-0006「存储契约」，provider/caching-distributed.md §2，ADR-0276）：
+// Go 的字符串就是 UTF-8 字节序列，len(key) 给出的正是它，不是字符数；与一致性模块的 rules.MaxCacheKeyBytes 是同一个值。
+const MaxKeyLength = rules.MaxCacheKeyBytes
 
 // Options 是条目的过期选项：绝对存活或滑动过期，至多一个；都为零用存储的默认存活时间。
 type Options struct {
@@ -84,19 +84,10 @@ type Lookup struct {
 	Found bool
 }
 
-// IsKey 判断键是否合法：非空、不含空白与控制字符、不超过 MaxKeyLength。空白按 RFC-0001「空白字符」的 25 个码位
-// （rules.IsWhitespace，与握手行、Error 的文案同一个函数），不用 unicode.IsSpace，免得与规范的表悄悄分叉。
-func IsKey(key string) bool {
-	if key == "" || len(key) > MaxKeyLength {
-		return false
-	}
-	for _, char := range key {
-		if rules.IsWhitespace(char) || unicode.IsControl(char) {
-			return false
-		}
-	}
-	return true
-}
+// IsKey 判断键是否合法（RFC-0006「存储契约」，provider/caching-distributed.md §2）：非空、不含空白与控制字符、按 UTF-8 编码后不超过
+// MaxKeyLength 字节。规则只有一致性模块的 rules.IsCacheKey 这一份，宿主一侧的适配器回放的是同一份向量（caching/cache-keys.json）：
+// 空白按 RFC-0001「空白字符」的 25 个码位，不用 unicode.IsSpace；控制字符是 Unicode 的 Cc 类；长度只看字节数，不看字符数。
+func IsKey(key string) bool { return rules.IsCacheKey(key) }
 
 // ValidateRefresh 校验 TryRefresh 的存活时间：必须为正，否则返回 CACHING_VALIDATION_002。
 func ValidateRefresh(ttl time.Duration) *primitives.Error {

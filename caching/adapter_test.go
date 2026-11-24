@@ -211,3 +211,75 @@ func TestKeysRejectTheSpecWhitespace(t *testing.T) {
 		}
 	}
 }
+
+// TestKeysFollowTheVectors 回放 cache-keys.json 的键（RFC-0006「存储契约」，provider/caching-distributed.md §2，ADR-0276）：valid 的每个键
+// IsKey 与 ValidateKey 都认、经操作集写得进又读得出，invalid 的每个键以 CACHING_VALIDATION_001 + caching.remote.key_invalid 被拒、到不了 Store；
+// 长度按 UTF-8 字节计，上限 MaxKeyLength 与向量的 maxBytes 相同，UTF-16 码元数不超而字节数超过的键照样被拒。
+// 向量的 prefixes 是键管理（RFC-0006「键管理」）列出与按前缀删除用的前缀：远程插件不实现键管理，操作集里没有收前缀的操作，本包没有判定前缀的代码
+func TestKeysFollowTheVectors(t *testing.T) {
+	vectors, err := conformance.CacheKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vectors.Keys.Valid) == 0 || len(vectors.Keys.Invalid) == 0 {
+		t.Fatal("the vector lists no keys")
+	}
+	if vectors.MaxBytes != caching.MaxKeyLength {
+		t.Errorf("the maximum key length is %d bytes, the vector gives %d", caching.MaxKeyLength, vectors.MaxBytes)
+	}
+
+	registry := operation.NewRegistry()
+	if err := caching.RegisterOperations(registry, caching.NewMemoryStore()); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := operation.NewInvoker(registry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	atLimit := false
+	for _, c := range vectors.Keys.Valid {
+		if len(c.Text) != c.UTF8Bytes {
+			t.Fatalf("%s: the text has %d bytes, the vector says %d", c.Name, len(c.Text), c.UTF8Bytes)
+		}
+		atLimit = atLimit || c.UTF8Bytes == vectors.MaxBytes
+		if !caching.IsKey(c.Text) || caching.ValidateKey(c.Text) != nil {
+			t.Errorf("%s: the key must be accepted", c.Name)
+		}
+		requests := requestsFor(t, c.Text)
+		if response := stored.Invoke(invocation.Background(), operation.Request{ID: caching.OperationSet, Payload: requests[caching.OperationSet]}); !response.Outcome.OK() {
+			t.Errorf("%s: set must accept the key: %v", c.Name, response.Outcome)
+			continue
+		}
+		read := stored.Invoke(invocation.Background(), operation.Request{ID: caching.OperationGet, Payload: requests[caching.OperationGet]})
+		if !read.Outcome.OK() || canonical(t, read.Payload) != `{"value":""}` {
+			t.Errorf("%s: get must find the entry written under the key, got %v %s", c.Name, read.Outcome, read.Payload)
+		}
+	}
+
+	store := &laxStore{}
+	rejecting := adapt(t, store)
+	countedByUnits := false
+	for _, c := range vectors.Keys.Invalid {
+		if len(c.Text) != c.UTF8Bytes {
+			t.Fatalf("%s: the text has %d bytes, the vector says %d", c.Name, len(c.Text), c.UTF8Bytes)
+		}
+		// 按 UTF-16 码元计不超、按字节计超过的键：只有按字节计才拒得掉
+		countedByUnits = countedByUnits || (c.UTF16Units <= vectors.MaxBytes && c.UTF8Bytes > vectors.MaxBytes)
+		if caching.IsKey(c.Text) {
+			t.Errorf("%s: the key must be rejected", c.Name)
+		}
+		if failure := caching.ValidateKey(c.Text); failure == nil || failure.Code != caching.ErrorCodeInvalidKey || failure.MessageKey != caching.MessageInvalidKey || failure.Details["key"] != c.Text {
+			t.Errorf("%s: ValidateKey gives %v", c.Name, failure)
+		}
+		failure := rejecting.Invoke(invocation.Background(), operation.Request{ID: caching.OperationGet, Payload: requestsFor(t, c.Text)[caching.OperationGet]}).Outcome.Err()
+		if failure == nil || failure.Code != caching.ErrorCodeInvalidKey || failure.MessageKey != caching.MessageInvalidKey {
+			t.Errorf("%s: get must reject the key, got %v", c.Name, failure)
+		}
+	}
+	if len(store.calls) != 0 {
+		t.Errorf("the store must not be reached with an invalid key, got %v", store.calls)
+	}
+	if !atLimit || !countedByUnits {
+		t.Errorf("the vector must reach the limit in bytes: a key of %d bytes accepted (%v), a key within the limit in UTF-16 units but over it in bytes rejected (%v)", vectors.MaxBytes, atLimit, countedByUnits)
+	}
+}

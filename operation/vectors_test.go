@@ -226,3 +226,44 @@ func TestPayloadReasonsFollowTheVectors(t *testing.T) {
 		}
 	}
 }
+
+// TestOperationIDsFollowTheVectors 回放 operation-ids.json（conventions/operation-ids.md，RFC-0011「操作 ID」，ADR-0276）：valid 的每一项
+// IsID 认、登记得进去，invalid 的每一项 IsID 不认、登记是编程错误（PRIMITIVES_VALIDATION_001）；上限 MaxIDLength 与向量的 maxLength 相同，
+// 正好到上限的合法、多一个字符的不合法
+func TestOperationIDsFollowTheVectors(t *testing.T) {
+	vectors, err := conformance.OperationIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vectors.Valid) == 0 || len(vectors.Invalid) == 0 {
+		t.Fatal("the vector lists no operation IDs")
+	}
+	if vectors.MaxLength != operation.MaxIDLength {
+		t.Errorf("the maximum length is %d, the vector gives %d", operation.MaxIDLength, vectors.MaxLength)
+	}
+	handler := operation.HandlerFunc[struct{}, struct{}](func(*invocation.Context, struct{}) primitives.Result[struct{}] { return primitives.Ok(struct{}{}) })
+	longest, overlong := false, false
+	for _, id := range vectors.Valid {
+		longest = longest || len(id) == vectors.MaxLength
+		if !operation.IsID(id) {
+			t.Errorf("%q must be accepted", id)
+		}
+		if err := operation.Add(operation.NewRegistry(), operation.Contract{ID: id}, handler, nil, ""); err != nil {
+			t.Errorf("%q must be registered: %v", id, err)
+		}
+	}
+	for _, id := range vectors.Invalid {
+		// 别处都合文法、只是多出一个字符的 ID：只有上限这一条拦得住它
+		overlong = overlong || len(id) == vectors.MaxLength+1
+		if operation.IsID(id) {
+			t.Errorf("%q must be rejected", id)
+		}
+		var failure *primitives.FrameworkError
+		if err := operation.Add(operation.NewRegistry(), operation.Contract{ID: id}, handler, nil, ""); !errors.As(err, &failure) || failure.Code != primitives.ErrorCodeInvalidArgument {
+			t.Errorf("registering %q must be a programming error, got %v", id, err)
+		}
+	}
+	if !longest || !overlong {
+		t.Errorf("the vector must reach both sides of the limit: an ID of %d characters accepted (%v), one of %d rejected (%v)", vectors.MaxLength, longest, vectors.MaxLength+1, overlong)
+	}
+}

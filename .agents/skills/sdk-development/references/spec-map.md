@@ -8,10 +8,10 @@
 | `manifest` | RFC-0002（解析规则 2、「写出」）、`manifest/manifest.schema.json`、`conventions/capability-ids.md` | `manifest/manifests.json`、`primitives/capability-requirements.json` | `XiHan.Framework.Kernel/Capabilities/ManifestReader.cs`、`XiHan.Framework.Primitives/Manifests/` |
 | `invocation` | RFC-0003（规则 1 取消、规则 7 追踪标志）、`conventions/baggage-keys.md` | `primitives/trace-context.json` | `XiHan.Framework.Primitives/InvocationContext.cs`、`TraceParent.cs` |
 | `pipeline` | RFC-0004（规则 7 顺序约束、规则 8 报错时机） | `pipeline/ordering.json` | `XiHan.Framework.Kernel/Pipeline/PipelineBuilder.cs` |
-| `operation` | RFC-0011（规则 2 载荷、规则 5 异常翻译、规则 10 内置步骤与编码）、`conventions/operation-ids.md` | `operations/payload-reasons.json`、`primitives/kernel-messages.json` | `XiHan.Framework.Kernel/Operations/`（`OperationRegistry.cs`、`OperationInvoker.cs`）、`KernelMessages.cs` 与 `Localization/` |
+| `operation` | RFC-0011（「操作 ID」、规则 2 载荷、规则 5 异常翻译、规则 10 内置步骤与编码）、`conventions/operation-ids.md` | `operations/payload-reasons.json`、`primitives/kernel-messages.json`、`primitives/operation-ids.json` | `XiHan.Framework.Kernel/Operations/`（`OperationRegistry.cs`、`OperationInvoker.cs`）、`KernelMessages.cs` 与 `Localization/` |
 | `internal/jsontext` | RFC-0001「JSON 文本」 | `primitives/json-text.json` | `XiHan.Framework.Kernel/Json/JsonText.cs` |
 | `plugin` | RFC-0017、`plugin/handshake.md`、`lifecycle.md`、`invocation.md`、`plugin.proto` | `plugin/*.json`（`wasm-exports.json` 不在本 SDK 认领的档里） | `XiHan.Framework.Plugins.Protocol`（常量、`PluginMessages.cs` 与 `Localization/`）；宿主一侧 `XiHan.Framework.Plugins.OutOfProcess`；手写的 .NET 插件 `framework/samples/EchoPlugin` |
-| `caching` | RFC-0019、RFC-0006、`provider/README.md`、`provider/caching-distributed.md`、`conventions/batch-first.md` | `provider/caching-distributed.json` | 宿主一侧适配器 `XiHan.Framework.Caching.Remote`，一致性套件 `XiHan.Framework.Caching.Conformance` |
+| `caching` | RFC-0019、RFC-0006、`provider/README.md`、`provider/caching-distributed.md`、`conventions/batch-first.md` | `provider/caching-distributed.json`、`caching/cache-keys.json`（只有键，前缀属于远程插件不实现的键管理） | 宿主一侧适配器 `XiHan.Framework.Caching.Remote`，一致性套件 `XiHan.Framework.Caching.Conformance` |
 
 ## 规范规则在一致性模块里的 Go 实现
 
@@ -19,8 +19,10 @@
 
 ### SDK 直接调用 rules 的
 
-- 空白字符集 `IsWhitespace`（RFC-0001「空白字符」）：`primitives` 里 `Error` 的自由文本、`plugin` 的端点地址、`caching` 的键。
-- 操作 ID `IsOperationID`（`conventions/operation-ids.md`）：`operation.IsID` 与 `manifest` 的 `contributes.operations` 都是它，SDK 里没有另一份正则。
+- 空白字符集 `IsWhitespace`（RFC-0001「空白字符」）：`primitives` 里 `Error` 的自由文本、`plugin` 的端点地址。
+- 操作 ID `IsOperationID`、上限 `MaxOperationIDLength`（`conventions/operation-ids.md`，不超过 128 个字符）：`operation.IsID`、`operation.MaxIDLength` 与 `manifest` 的 `contributes.operations` 都是它，SDK 里没有另一份正则。
+- 清单的激活事件 `IsActivationEvent`（RFC-0002 解析规则 2 第 3 步，`plugin/lifecycle.md` §3）：`manifest` 读取 `activation`；`onEvent:` 的模式可以带下划线，`onOperation:` 的不行。
+- 缓存键 `IsCacheKey`、上限 `MaxCacheKeyBytes`（RFC-0006「存储契约」，按 UTF-8 字节计）：`caching.IsKey` 与 `caching.MaxKeyLength`。键前缀的 `IsCacheKeyPrefix` 没有用到，远程插件不实现键管理。
 - 主题 `IsTopic`（RFC-0009）：`plugin` 核对订阅声明。
 - 协议版本协商 `NegotiateVersion`：`plugin` 的 Handshake。
 - 握手行与端点 `ParseHandshakeLine`、`ParseEndpoint`；选回调端点 `SelectHostEndpoint`。
@@ -41,10 +43,10 @@
 | 生命周期迁移 | `primitives.LifecycleState.CanTransitionTo` | `primitives/lifecycle-transitions.json` |
 | `Result` 与 `Error` 的线上编码 | `primitives` 的 `MarshalJSON` / `UnmarshalJSON` | `primitives/wire-encoding.json` |
 | traceparent | `invocation.ParseTraceParent`、`Context.TraceParent` | `primitives/trace-context.json` |
-| 清单 ID、能力 ID 与能力依赖 | `manifest.IsManifestID`、`IsCapabilityID` 与读取 | `manifest/manifests.json`、`primitives/capability-requirements.json` |
+| 清单 ID、能力 ID 与能力依赖，清单其余成员的文法（操作 ID 与激活事件除外，见上） | `manifest.IsManifestID`、`IsCapabilityID` 与读取 | `manifest/manifests.json`、`primitives/capability-requirements.json` |
 | 管道阶段与排序 | `primitives.PipelineStage`、`pipeline.Builder` | `pipeline/ordering.json` |
 | JSON 文本的共同检查 | `internal/jsontext.Parse` / `Check` | `primitives/json-text.json` |
 
-测试里拿 `rules` 当独立实现对照的有：`rules.CheckJSONText`（`internal/jsontext` 的向量回放逐例比较两边的结果）、`rules.HasNoDuplicateMembers` 与 `rules.Placeholders`（`primitives`、`operation` 的向量回放）。
+测试里拿 `rules` 当独立实现对照的有：`rules.CheckJSONText`（`internal/jsontext` 的向量回放逐例比较两边的结果，`primitives` 回放线上编码的重复成员时也用它；`rules.HasNoDuplicateMembers` 已标弃用，staticcheck 会报，不再用）与 `rules.Placeholders`（`primitives`、`operation` 的向量回放）。
 
 规则包不实现模板的格式化，格式化结果以 `message-templates.json` 为准。

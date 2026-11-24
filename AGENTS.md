@@ -32,7 +32,7 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 3. 检查当前分支、`git status` 和最近提交；保留用户已有改动。
 4. 读相关规范章节：`spec/rfcs/<编号>-*.md`（原语 RFC-0001、清单 RFC-0002、调用上下文 RFC-0003、管道 RFC-0004、本地化 RFC-0010、操作 RFC-0011、插件协议 RFC-0017、远程 Provider RFC-0019、版本与一致性档 RFC-0024）、`spec/conventions/`、`spec/manifest/manifest.schema.json`、`spec/plugin/handshake.md` / `lifecycle.md` / `invocation.md` / `plugin.proto`、`spec/provider/caching-distributed.md`、`spec/conformance/profiles.json` 与 `spec/conformance/vectors/` 下对应的向量。
 5. 读目标包的源文件与 `*_test.go`、仓库根的 `vectors_test.go`，以及 .NET 参考实现里对应的类型（本地克隆 `../XiHan.Framework/framework/src`）。
-6. 先找已有实现：JSON 文本的共同检查在 `internal/jsontext`，载荷解码与值模型在 `internal/jsoncodec`；规范的文法与判定先看一致性模块的 `rules`，SDK 已经调用的（空白字符集、操作 ID、主题、协议版本协商、握手行与端点、截止时间、回调的权限与状态映射、读入错误）直接复用，不另写一份。原语层、清单、traceparent、管道排序与 JSON 文本检查是 SDK 自己实现、靠回放向量验证的，两类各有哪些见 `sdk-development` 技能的 `references/spec-map.md`。
+6. 先找已有实现：JSON 文本的共同检查在 `internal/jsontext`，载荷解码与值模型在 `internal/jsoncodec`；规范的文法与判定先看一致性模块的 `rules`，SDK 已经调用的（空白字符集、操作 ID、清单的激活事件、主题、缓存键、协议版本协商、握手行与端点、截止时间、回调的权限与状态映射、读入错误）直接复用，不另写一份。原语层、清单的其余文法、traceparent、管道排序与 JSON 文本检查是 SDK 自己实现、靠回放向量验证的，两类各有哪些见 `sdk-development` 技能的 `references/spec-map.md`。
 
 ## 目录结构
 
@@ -124,7 +124,7 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 - 文案不写在代码里：错误只带消息键与参数（`primitives.NewError(code, key, details, inner)`），`primitives.Literal` 只用于线上还原；目录是 `Localization/<区域>.json`（键 → 模板，至少 `en-US.json`），经 `plugin.LoadCatalog` 加载。运行时自己的目录（`plugin/Localization/`）带齐 10 种区域。
 - 取消与截止时间经 `invocation.Context`（嵌入 `context.Context`）一路传下去；处理器在调用方的 goroutine 里同步执行，不另起 goroutine 放弃它；超时与取消的归因只看截止令牌（`Context.Cancellation()`）。
 - 读 JSON 先过 `internal/jsontext` 的共同检查再解码，成员名区分大小写、重复成员拒绝；不直接交给 `encoding/json`。
-- 规范的文法与判定：`rules` 里有、SDK 已经在调用的（`rules.IsWhitespace`、`rules.IsOperationID`、`rules.IsTopic`、`rules.NegotiateVersion`、`rules.ParseEndpoint`、`rules.ParseDeadline`、`rules.MapCallbackStatus`、`rules.ReadProtoError` 等）一律调用，不另写一份，免得与规范的表悄悄分叉；新增的判定先看 `rules` 有没有。原语层（错误码、消息键与模板、Baggage 键与值、生命周期）、`invocation` 的 traceparent、`manifest` 的清单文法、`pipeline` 的排序与 `internal/jsontext` 的 JSON 文本检查是自己实现的，各自回放对应的向量，改它们时以向量为准。清单见 `sdk-development` 技能的 `references/spec-map.md`。
+- 规范的文法与判定：`rules` 里有、SDK 已经在调用的（`rules.IsWhitespace`、`rules.IsOperationID`、`rules.IsActivationEvent`、`rules.IsTopic`、`rules.IsCacheKey`、`rules.NegotiateVersion`、`rules.ParseEndpoint`、`rules.ParseDeadline`、`rules.MapCallbackStatus`、`rules.ReadProtoError` 等）一律调用，不另写一份，免得与规范的表悄悄分叉；新增的判定先看 `rules` 有没有。原语层（错误码、消息键与模板、Baggage 键与值、生命周期）、`invocation` 的 traceparent、`manifest` 的清单文法（操作 ID 与激活事件除外）、`pipeline` 的排序与 `internal/jsontext` 的 JSON 文本检查是自己实现的，各自回放对应的向量，改它们时以向量为准。清单见 `sdk-development` 技能的 `references/spec-map.md`。
 - 不建无界集合：登记表与存储都有容量（`operation.Capacity`、`caching.DefaultCapacity` 与 `caching.WithCapacity`），满了返回错误。
 - 平台差异放在 `_windows.go` / `_other.go` 文件里（`//go:build windows` / `!windows`）；`plugin/v1` 只由 `buf generate` 生成。
 
