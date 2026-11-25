@@ -141,7 +141,7 @@ func TestBindingDebugOutputCarriesNoValues(t *testing.T) {
 }
 
 // TestBindingLogValueCarriesNoValues 核对 slog 里的绑定（lifecycle.md §7.2）：运行时的 JSON 行处理器与文本处理器都只写
-// name、type 与 properties（属性名的数组），不带主值与属性值；指针同样。
+// name、type 与 propertyNames（属性名的数组），不带主值与属性值；指针同样。
 func TestBindingLogValueCarriesNoValues(t *testing.T) {
 	binding := secretBinding()
 	var lines bytes.Buffer
@@ -158,16 +158,16 @@ func TestBindingLogValueCarriesNoValues(t *testing.T) {
 	if err := json.Unmarshal(lines.Bytes(), &line); err != nil {
 		t.Fatalf("the log line must be JSON: %v", err)
 	}
-	const logged = `{"name":"db","type":"connection:relational","properties":["Password","empty","password"]}`
+	const logged = `{"name":"db","type":"connection:relational","propertyNames":["Password","empty","password"]}`
 	for what, got := range map[string]json.RawMessage{"binding": line.Binding, "pointer": line.Pointer, "group.binding": line.Group.Binding} {
 		if string(got) != logged {
 			t.Errorf("%s logged as %s, want %s", what, got, logged)
 		}
 	}
-	// 没有属性：properties 是空数组、不是 null
+	// 没有属性：propertyNames 是空数组、不是 null
 	lines.Reset()
 	logger.Info("configured", "binding", Binding{Name: "cache", Type: "cache:distributed", Value: secretValue})
-	if !strings.Contains(lines.String(), `"binding":{"name":"cache","type":"cache:distributed","properties":[]}`) {
+	if !strings.Contains(lines.String(), `"binding":{"name":"cache","type":"cache:distributed","propertyNames":[]}`) {
 		t.Errorf("a binding without properties logged as %.300q", lines.String())
 	}
 	expectNoSecrets(t, "the JSON log line", lines.String())
@@ -177,7 +177,7 @@ func TestBindingLogValueCarriesNoValues(t *testing.T) {
 	plain := slog.New(slog.NewTextHandler(&text, nil))
 	plain.Info("configured", "binding", binding, "bindings", []Binding{binding}, "configuration", Configuration{Bindings: []Binding{binding}})
 	expectNoSecrets(t, "the text log line", text.String())
-	for _, part := range []string{"binding.name=db", "binding.type=connection:relational", `binding.properties="[Password empty password]"`} {
+	for _, part := range []string{"binding.name=db", "binding.type=connection:relational", `binding.propertyNames="[Password empty password]"`} {
 		if !strings.Contains(text.String(), part) {
 			t.Errorf("the text log line must contain %s, got %.300q", part, text.String())
 		}
@@ -221,5 +221,105 @@ func TestConfigureKeepsBindingValuesOutOfTheLogAndTheStatus(t *testing.T) {
 			expectNoSecrets(t, "the runtime log", h.stderr.String())
 			expectNoSecrets(t, "the status", protojson.Format(configured))
 		})
+	}
+}
+
+// TestBindingJSONCarriesNoValues 核对 encoding/json 写出的绑定（lifecycle.md §7.2）：单个绑定、指针、切片、映射、
+// 嵌在结构里与整个 Configuration 都只写 {"name","type","propertyNames"}，属性名按升序、没有属性时是空数组，
+// 不带主值与属性值；成员、先后与写法同 TypeScript SDK 的 toJSON。Unmarshal 读不回主值与属性值。
+func TestBindingJSONCarriesNoValues(t *testing.T) {
+	binding := secretBinding()
+	const text = `{"name":"db","type":"connection:relational","propertyNames":["Password","empty","password"]}`
+	const bare = `{"name":"cache","type":"cache:distributed","propertyNames":[]}`
+	cache := Binding{Name: "cache", Type: "cache:distributed", Value: secretValue}
+	configuration := Configuration{Section: json.RawMessage(`{"pool":4}`), GrantedPermissions: []string{"binding:db"}, Bindings: []Binding{binding, cache}, WorkDirectory: "/work"}
+	configured := `{"Section":{"pool":4},"GrantedPermissions":["binding:db"],"Bindings":[` + text + "," + bare + `],"WorkDirectory":"/work"}`
+	cases := []struct {
+		what  string
+		value any
+		want  string
+	}{
+		{"a binding", binding, text},
+		{"a pointer", &binding, text},
+		{"a slice", []Binding{binding, cache}, "[" + text + "," + bare + "]"},
+		{"a slice of pointers", []*Binding{&binding}, "[" + text + "]"},
+		{"a map", map[string]Binding{"db": binding}, `{"db":` + text + `}`},
+		{"a struct field", struct{ Held Binding }{binding}, `{"Held":` + text + `}`},
+		{"a nil table", cache, bare},
+		{"an empty table", Binding{Name: "cache", Type: "cache:distributed", Value: secretValue, Properties: map[string]string{}}, bare},
+		{"a configuration", configuration, configured},
+		{"a configuration pointer", &configuration, configured},
+	}
+	for _, c := range cases {
+		written, err := json.Marshal(c.value)
+		if err != nil {
+			t.Fatalf("Marshal of %s failed: %v", c.what, err)
+		}
+		if got := string(written); got != c.want {
+			t.Errorf("Marshal of %s gave %s, want %s", c.what, got, c.want)
+		}
+		expectNoSecrets(t, "Marshal of "+c.what, string(written))
+	}
+
+	// 缩进与不转义 HTML 的编码器同样经过 MarshalJSON
+	indented, err := json.MarshalIndent(configuration, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectNoSecrets(t, "MarshalIndent of a Configuration", string(indented))
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode([]Binding{binding}); err != nil {
+		t.Fatal(err)
+	}
+	if got := encoded.String(); got != "["+text+"]\n" {
+		t.Errorf("Encoder gave %q", got)
+	}
+
+	// 与 TypeScript SDK 的 toJSON 同样的文本：紧凑写法，成员依次是 name、type、propertyNames，属性名按升序
+	const typescript = `{"name":"db","type":"connection:relational","propertyNames":["password","username"]}`
+	shared := Binding{Name: "db", Type: "connection:relational", Value: secretValue, Properties: map[string]string{"username": "app", "password": secretPassword}}
+	if written, err := json.Marshal(shared); err != nil || string(written) != typescript {
+		t.Errorf("Marshal gave %s (%v), want the text the TypeScript SDK writes: %s", written, err, typescript)
+	}
+
+	// 遮过的文本读不回主值与属性值：没有 UnmarshalJSON，按字段读到的只有名字与类型
+	var back Binding
+	if err := json.Unmarshal([]byte(text), &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.Name != "db" || back.Type != "connection:relational" || back.Value != "" || back.Properties != nil {
+		t.Errorf("Unmarshal of the masked text gave %v with value %q and %d properties", back, back.Value, len(back.Properties))
+	}
+}
+
+// TestLogHandlerWritesBindingsWithoutValues 核对运行时的 JSON 行处理器（NewLogHandler）记绑定的切片与整个 Configuration：
+// 它们不经 LogValue，由 encoding/json 写出，每个绑定同样只有名字、类型与属性名（lifecycle.md §7.2）。
+func TestLogHandlerWritesBindingsWithoutValues(t *testing.T) {
+	binding := secretBinding()
+	configuration := Configuration{Section: json.RawMessage(`{}`), Bindings: []Binding{binding}}
+	var lines bytes.Buffer
+	logger := newTestLogger(&lines)
+	logger.Info("configured", "bindings", []Binding{binding}, "pointers", []*Binding{&binding}, "configuration", configuration, "pointer", &configuration)
+	expectNoSecrets(t, "the JSON log line", lines.String())
+	var line struct {
+		Bindings      json.RawMessage `json:"bindings"`
+		Pointers      json.RawMessage `json:"pointers"`
+		Configuration struct {
+			Bindings json.RawMessage `json:"Bindings"`
+		} `json:"configuration"`
+		Pointer struct {
+			Bindings json.RawMessage `json:"Bindings"`
+		} `json:"pointer"`
+	}
+	if err := json.Unmarshal(lines.Bytes(), &line); err != nil {
+		t.Fatalf("the log line must be JSON: %v", err)
+	}
+	const logged = `[{"name":"db","type":"connection:relational","propertyNames":["Password","empty","password"]}]`
+	for what, got := range map[string]json.RawMessage{"bindings": line.Bindings, "pointers": line.Pointers, "configuration.Bindings": line.Configuration.Bindings, "pointer.Bindings": line.Pointer.Bindings} {
+		if string(got) != logged {
+			t.Errorf("%s logged as %s, want %s", what, got, logged)
+		}
 	}
 }

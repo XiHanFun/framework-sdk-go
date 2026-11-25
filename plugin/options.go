@@ -180,8 +180,9 @@ type Health struct {
 }
 
 // Binding 是宿主解析后的资源绑定（lifecycle.md §2、§7.2，ADR-0285）。主值与属性值可能是凭据，不要写进日志、错误与健康条目：
-// 它的调试输出（fmt 的各种动词与 slog）只带绑定名、类型与属性名，不带 Value 与属性值；encoding/json 等按字段反射的写出不在此列，
-// 照样带全部字段，放在未导出字段里再交给 fmt 也是。
+// 它的调试输出（fmt 的各种动词与 slog）与 encoding/json 的写出只带绑定名、类型与属性名，不带 Value 与属性值，放在切片、
+// Configuration 与别的结构里一样；不经这些出口的写出不在此列（按字段反射的其他编码器、放在未导出字段里再交给 fmt 等），
+// 照样带全部字段。
 type Binding struct {
 	// Name 是清单 bindings 里声明的名字。
 	Name string
@@ -234,9 +235,27 @@ func (b Binding) Format(state fmt.State, verb rune) {
 	}
 }
 
-// LogValue 实现 slog.LogValuer：日志里的绑定是一个组，只有 name、type 与 properties（按升序排列的属性名），不带主值与属性值。
+// LogValue 实现 slog.LogValuer：日志里的绑定是一个组，只有 name、type 与 propertyNames（按升序排列的属性名），不带主值与属性值；
+// 成员与 MarshalJSON 相同，JSON 行处理器写单个绑定与写切片、Configuration 里的绑定是同一个样子。
 func (b Binding) LogValue() slog.Value {
-	return slog.GroupValue(slog.String("name", b.Name), slog.String("type", b.Type), slog.Any("properties", b.propertyNames()))
+	return slog.GroupValue(slog.String("name", b.Name), slog.String("type", b.Type), slog.Any("propertyNames", b.propertyNames()))
+}
+
+// bindingJSON 是绑定在 JSON 里的样子：与 TypeScript SDK 的 toJSON 同样的成员与先后，属性名没有时是空数组、不是 null。
+type bindingJSON struct {
+	// Name 是绑定名。
+	Name string `json:"name"`
+	// Type 是资源类型。
+	Type string `json:"type"`
+	// PropertyNames 是按升序排列的属性名。
+	PropertyNames []string `json:"propertyNames"`
+}
+
+// MarshalJSON 实现 json.Marshaler：写出 {"name":…,"type":…,"propertyNames":[…]}，属性名按升序，不带主值与属性值（lifecycle.md §7.2）；
+// 值接收者，绑定、绑定的指针、[]Binding 与 Configuration 经 encoding/json 都走这里，JSON 日志处理器写切片与配置时也是。
+// 没有对应的 UnmarshalJSON：写出的文本少了主值与属性值，读不回原来的绑定，这是有意的。
+func (b Binding) MarshalJSON() ([]byte, error) {
+	return json.Marshal(bindingJSON{Name: b.Name, Type: b.Type, PropertyNames: b.propertyNames()})
 }
 
 // Configuration 是 Configure 下发的内容。
