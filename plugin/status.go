@@ -146,7 +146,7 @@ func ToMetadata(ctx *invocation.Context) *pluginv1.InvocationMetadata {
 	return metadata
 }
 
-// ToProtoEnvelope 把信封编码为协议消息。
+// ToProtoEnvelope 把信封编码为协议消息：DataSchema 原样写进 data_schema（没有即空串，invocation.md §4）。
 func ToProtoEnvelope(envelope Envelope) *pluginv1.Envelope {
 	specVersion := envelope.SpecVersion
 	if specVersion == "" {
@@ -167,10 +167,11 @@ func ToProtoEnvelope(envelope Envelope) *pluginv1.Envelope {
 		DataContentType: contentType,
 		Data:            envelope.Data,
 		Extensions:      envelope.Extensions,
+		DataSchema:      envelope.DataSchema,
 	}
 }
 
-// FromProtoEnvelope 把协议消息还原为信封。
+// FromProtoEnvelope 把协议消息还原为信封：data_schema 原样交出（空串即没有，invocation.md §4）。
 func FromProtoEnvelope(envelope *pluginv1.Envelope) Envelope {
 	if envelope == nil {
 		return Envelope{}
@@ -184,6 +185,7 @@ func FromProtoEnvelope(envelope *pluginv1.Envelope) Envelope {
 		Subject:         envelope.Subject,
 		Time:            envelope.Time,
 		DataContentType: envelope.DataContentType,
+		DataSchema:      envelope.DataSchema,
 		Data:            envelope.Data,
 		Extensions:      envelope.Extensions,
 	}

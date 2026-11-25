@@ -116,8 +116,11 @@ type Envelope struct {
 	Subject         string
 	Time            string
 	DataContentType string
-	Data            []byte
-	Extensions      map[string]string
+	// DataSchema 是 CloudEvents 的 dataschema（数据遵循的模式，URI）；空串表示没有（invocation.md §4，ADR-0305）。
+	// 投递时宿主写来的原样交给处理器，发布时原样写给宿主：SDK 不裁剪、不核对 URI 语法，只有空白的值由宿主拒绝那一项。
+	DataSchema string
+	Data       []byte
+	Extensions map[string]string
 }
 
 // EventHandler 处理一条投递的消息；返回失败由宿主的消息代理按重试与死信策略处理，处理器必须幂等。
