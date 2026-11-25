@@ -27,6 +27,7 @@
 - 协议版本协商 `NegotiateVersion`：`plugin` 的 Handshake。
 - 握手行与端点 `ParseHandshakeLine`、`ParseEndpoint`；选回调端点 `SelectHostEndpoint`。
 - 截止时间 `ParseDeadline`、`FormatDeadline`、`EffectiveDeadline`。
+- 信封的 `time` `ReadEnvelopeTime`（`plugin/invocation.md` §4，与截止时间同一条文法）：`plugin.FromProtoEnvelope` 把宿主写来的文本读成 `time.Time`；写出不用 `FormatEnvelopeTime`（那是宿主的七位小数、`+00:00` 写法），按 `time.RFC3339Nano` 写成以 `Z` 结尾、去掉小数末尾 0 的文本，与其余 SDK 写出同一份。
 - 回调：权限与阶段 `CallbackPermission`、`CallbackPhase`，失败的映射 `MapCallbackStatus`；读入对方写来的错误 `ReadProtoError`、`ReadProtoStatus`。
 
 `ParseHostAddresses`、`ReadDetails`、`StatusReason` 没有被 SDK 直接调用：它们分别在 `SelectHostEndpoint`、`ReadProtoError`、`MapCallbackStatus` 里面起作用。

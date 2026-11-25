@@ -146,7 +146,7 @@ func ToMetadata(ctx *invocation.Context) *pluginv1.InvocationMetadata {
 	return metadata
 }
 
-// ToProtoEnvelope 把信封编码为协议消息：DataSchema 原样写进 data_schema（没有即空串，invocation.md §4）。
+// ToProtoEnvelope 把信封编码为协议消息：Time 按 formatEnvelopeTime 写出，DataSchema 原样写进 data_schema（没有即空串，invocation.md §4）。
 func ToProtoEnvelope(envelope Envelope) *pluginv1.Envelope {
 	specVersion := envelope.SpecVersion
 	if specVersion == "" {
@@ -163,7 +163,7 @@ func ToProtoEnvelope(envelope Envelope) *pluginv1.Envelope {
 		Type:            envelope.Type,
 		SpecVersion:     specVersion,
 		Subject:         envelope.Subject,
-		Time:            envelope.Time,
+		Time:            formatEnvelopeTime(envelope.Time),
 		DataContentType: contentType,
 		Data:            envelope.Data,
 		Extensions:      envelope.Extensions,
@@ -171,10 +171,20 @@ func ToProtoEnvelope(envelope Envelope) *pluginv1.Envelope {
 	}
 }
 
-// FromProtoEnvelope 把协议消息还原为信封：data_schema 原样交出（空串即没有，invocation.md §4）。
-func FromProtoEnvelope(envelope *pluginv1.Envelope) Envelope {
+// FromProtoEnvelope 把宿主写来的协议消息还原为信封：time 按规范的文法读成 UTC 时刻（rules.ReadEnvelopeTime，空串即没有），
+// data_schema 原样交出（空串即没有，invocation.md §4）。time 不合文法或越界时 ok 为假、信封为零值；nil 是没有字段的信封。
+func FromProtoEnvelope(envelope *pluginv1.Envelope) (Envelope, bool) {
 	if envelope == nil {
-		return Envelope{}
+		return Envelope{}, true
+	}
+	instant, present, ok := rules.ReadEnvelopeTime(envelope.Time)
+	if !ok {
+		return Envelope{}, false
+	}
+	// 没有时间是 nil，不是零值：0001-01-01T00:00:00Z 正是零值的 time.Time，也是文法允许的最早时刻
+	var at *time.Time
+	if present {
+		at = &instant
 	}
 	return Envelope{
 		Topic:           envelope.Topic,
@@ -183,12 +193,22 @@ func FromProtoEnvelope(envelope *pluginv1.Envelope) Envelope {
 		Type:            envelope.Type,
 		SpecVersion:     envelope.SpecVersion,
 		Subject:         envelope.Subject,
-		Time:            envelope.Time,
+		Time:            at,
 		DataContentType: envelope.DataContentType,
 		DataSchema:      envelope.DataSchema,
 		Data:            envelope.Data,
 		Extensions:      envelope.Extensions,
+	}, true
+}
+
+// formatEnvelopeTime 写出信封的时刻（invocation.md §4）：nil 写空串；否则换算成 UTC、按 time.RFC3339Nano 写，
+// 以 Z 结尾，秒的小数部分去掉末尾的 0、全为 0 时不写小数点，各语言的 SDK 对同一时刻写出同一份文本（精度以内）。
+// 不核对范围：越界的时刻照写，由宿主逐项核对时拒绝，不改变它与其余核对的先后（ADR-0293）。
+func formatEnvelopeTime(instant *time.Time) string {
+	if instant == nil {
+		return ""
 	}
+	return instant.UTC().Format(time.RFC3339Nano)
 }
 
 // toProtoHealth 把健康编码为协议消息。

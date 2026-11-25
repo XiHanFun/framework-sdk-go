@@ -108,13 +108,18 @@ type Subscription struct {
 
 // Envelope 是 CloudEvents 1.0 信封的平铺（RFC-0009）。
 type Envelope struct {
-	Topic           string
-	ID              string
-	Source          string
-	Type            string
-	SpecVersion     string
-	Subject         string
-	Time            string
+	Topic       string
+	ID          string
+	Source      string
+	Type        string
+	SpecVersion string
+	Subject     string
+	// Time 是信封的时刻（RFC-0009「信封」第 3 条，invocation.md §4）；nil 表示没有，可以写 new(time.Now())。
+	// 发布时换算成 UTC 写成 RFC 3339（time.RFC3339Nano）：以 Z 结尾，秒的小数部分去掉末尾的 0、全为 0 时不写小数点，最多九位；
+	// SDK 不在本地核对，年份不在 0001–9999 之间等越界的时刻照样写出，由宿主以 messaging.envelope.invalid_time 拒绝那一项。
+	// 投递时宿主写来的文本按规范的文法读成 UTC 时刻（rules.ReadEnvelopeTime）：Go 的精度是纳秒，九位以内的小数不截断；
+	// 读不出的投递以 gRPC InvalidArgument 拒绝，不交给处理器。
+	Time            *time.Time
 	DataContentType string
 	// DataSchema 是 CloudEvents 的 dataschema（数据遵循的模式，URI）；空串表示没有（invocation.md §4，ADR-0305）。
 	// 投递时宿主写来的原样交给处理器，发布时原样写给宿主：SDK 不裁剪、不核对 URI 语法，只有空白的值由宿主拒绝那一项。

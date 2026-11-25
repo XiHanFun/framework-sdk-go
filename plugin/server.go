@@ -349,16 +349,21 @@ func (s *service) InvokeStream(stream grpc.BidiStreamingServer[pluginv1.StreamFr
 	}
 }
 
-// HandleEvent 投递一条消息，依次核对（invocation.md §4）：会话令牌（拦截器）；有信封、方式是空、competing 或 broadcast，否则 gRPC
-// InvalidArgument；按（主题，方式，类型）找订阅，没有即 KERNEL_NOTFOUND_001 + plugins.event.unsubscribed；可服务，否则
-// plugins.process.unavailable；然后还原上下文，匹配的订阅按声明顺序依次交给各自的处理器，第一个失败即结果。
+// HandleEvent 投递一条消息，依次核对（invocation.md §4）：会话令牌（拦截器）；有信封、方式是空、competing 或 broadcast，
+// 信封的 time 读得出（FromProtoEnvelope），否则 gRPC InvalidArgument；按（主题，方式，类型）找订阅，没有即 KERNEL_NOTFOUND_001 +
+// plugins.event.unsubscribed；可服务，否则 plugins.process.unavailable；然后还原上下文，匹配的订阅按声明顺序依次交给各自的处理器，
+// 第一个失败即结果。
 func (s *service) HandleEvent(ctx context.Context, request *pluginv1.HandleEventRequest) (*pluginv1.HandleEventResponse, error) {
 	r := s.r
 	mode := SubscriptionMode(request.GetMode())
 	if request.Envelope == nil || !isSubscriptionMode(mode) {
 		return nil, status.Errorf(codes.InvalidArgument, "a delivery needs an envelope and the mode empty, '%s' or '%s'", SubscriptionModeCompeting, SubscriptionModeBroadcast)
 	}
-	envelope := FromProtoEnvelope(request.Envelope)
+	// 宿主写来的 time 按规范一律合文法；读不出是宿主写来的内容不合法，与没有信封同一处置，不找订阅、不交给处理器
+	envelope, ok := FromProtoEnvelope(request.Envelope)
+	if !ok {
+		return nil, status.Errorf(codes.InvalidArgument, "the envelope time '%s' does not follow the timestamp grammar", request.Envelope.GetTime())
+	}
 	handlers := r.handlersFor(envelope, mode)
 	if len(handlers) == 0 {
 		return &pluginv1.HandleEventResponse{Status: ToStatus(primitives.Fail[primitives.Unit](eventUnsubscribed(r.manifest.ID, envelope, mode)))}, nil
