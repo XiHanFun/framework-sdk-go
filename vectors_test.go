@@ -18,12 +18,13 @@ var replayedVectors = []string{
 	"plugin/binding-properties.json",          // plugin.TestBindingPropertiesFollowTheVectors（reading；其余各节是宿主一侧的）
 	"plugin/callback-status.json",             // plugin.TestCallbackStatusFollowsTheVectors
 	"plugin/deadlines.json",                   // plugin.TestDeadlinesFollowTheVectors
-	"plugin/envelope-times.json",              // plugin.TestEnvelopeTimesFollowTheVectors（host 档，信封的 time 是时刻类型，自测读写，ADR-0293）
+	"plugin/envelope-times.json",              // plugin.TestEnvelopeTimesFollowTheVectors（valid 与 invalid 是 SDK 的读入，written 是宿主的写法，ADR-0310）
 	"plugin/error-reading.json",               // plugin.TestErrorReadingFollowsTheVectors
 	"plugin/handshake-lines.json",             // plugin.TestHandshakeLinesFollowTheVectors
 	"plugin/host-addresses.json",              // plugin.TestHostAddressesFollowTheVectors
 	"plugin/plugin-messages.json",             // plugin.TestRuntimeMessagesFollowTheVectors
 	"plugin/protocol-versions.json",           // plugin.TestNegotiationFollowsTheVectors
+	"plugin/sdk-envelope-times.json",          // plugin.TestSDKEnvelopeTimesFollowTheVectors（纳秒一列，unreadable 另经投递核对，ADR-0310）
 	"primitives/baggage-keys.json",            // primitives.TestBaggageKeysFollowTheVectors 等
 	"primitives/capability-requirements.json", // manifest.TestRequirementsFollowTheVectors
 	"primitives/error-codes.json",             // primitives.TestErrorCodesFollowTheVectors

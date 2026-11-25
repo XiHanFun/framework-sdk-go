@@ -129,7 +129,7 @@ func TestEnvelopeTimesAreWrittenInUTC(t *testing.T) {
 	}
 }
 
-// TestEnvelopeTimesFollowTheVectors 拿 envelope-times.json 自测（ADR-0293，向量在 host 档）：valid 的文本经 FromProtoEnvelope 读成
+// TestEnvelopeTimesFollowTheVectors 回放 envelope-times.json（ADR-0293、ADR-0310，向量在 host 与 plugin 档）：valid 的文本经 FromProtoEnvelope 读成
 // UTC 时刻（空串是 nil），invalid 读不出；written 是宿主写给插件的文本，读出的时刻等于 instant；SDK 写出的每个时刻都在 valid 的文法里、
 // 读回同一时刻。Go 的精度是纳秒，九位小数不截断。
 func TestEnvelopeTimesFollowTheVectors(t *testing.T) {
@@ -187,6 +187,52 @@ func TestEnvelopeTimesFollowTheVectors(t *testing.T) {
 	}
 }
 
+// TestSDKEnvelopeTimesFollowTheVectors 回放 sdk-envelope-times.json 的纳秒一列（invocation.md §4「SDK 读宿主写来的」「SDK 写给宿主的」，
+// ADR-0306、ADR-0310）：writing 的 instant 照原文的偏移构造成 time.Time（与投递的读法读出的是同一时刻），经发布的写出路径 ToProtoEnvelope
+// 写成文本、与 text 逐字比较，null 写空串；reading 的 text 经投递的读入路径 FromProtoEnvelope 读成 UTC 时刻、与 utc 相等；
+// unreadable 读不出（投递以 InvalidArgument 拒绝由 TestDeliveredEnvelopesCarryTheTime 核对）。Go 的精度是纳秒，不截断。
+func TestSDKEnvelopeTimesFollowTheVectors(t *testing.T) {
+	vectors, err := conformance.SDKEnvelopeTimes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vectors.Precisions.Nanoseconds != 9 {
+		t.Fatalf("the nanosecond precision writes %d fractional digits, want 9", vectors.Precisions.Nanoseconds)
+	}
+	for _, c := range vectors.Writing {
+		var at *time.Time
+		if c.Instant != nil {
+			// time.Parse 保留原文的偏移，写出时才换算成 UTC；先核对它与 SDK 读宿主文本的读法是同一时刻
+			value, err := time.Parse(time.RFC3339Nano, *c.Instant)
+			if err != nil {
+				t.Fatalf("%s: %v", c.Name, err)
+			}
+			if read, ok := FromProtoEnvelope(&pluginv1.Envelope{Time: *c.Instant}); !ok || read.Time == nil || !read.Time.Equal(value) {
+				t.Errorf("%s: %q reads as %v (ok=%v), want %s", c.Name, *c.Instant, read.Time, ok, value)
+			}
+			at = &value
+		}
+		if written := ToProtoEnvelope(Envelope{Topic: "t", ID: "1", Time: at}).Time; written != c.Text.Nanoseconds {
+			t.Errorf("%s: written as %q, want %q", c.Name, written, c.Text.Nanoseconds)
+		}
+	}
+	for _, c := range vectors.Reading {
+		want, err := time.Parse(time.RFC3339Nano, c.UTC.Nanoseconds)
+		if err != nil {
+			t.Fatalf("%s: %v", c.Name, err)
+		}
+		envelope, ok := FromProtoEnvelope(&pluginv1.Envelope{Topic: "t", Time: c.Text})
+		if !ok || envelope.Time == nil || !envelope.Time.Equal(want) || envelope.Time.Location() != time.UTC {
+			t.Errorf("%s: %q read as %v (ok=%v), want %s in UTC", c.Name, c.Text, envelope.Time, ok, want)
+		}
+	}
+	for _, c := range vectors.Unreadable {
+		if envelope, ok := FromProtoEnvelope(&pluginv1.Envelope{Topic: "t", Time: c.Text}); ok {
+			t.Errorf("%s: %q must not be read, got %v", c.Name, c.Text, envelope.Time)
+		}
+	}
+}
+
 // TestDeliveredEnvelopesCarryTheTime 核对投递时 time 读成 UTC 时刻交给处理器（invocation.md §4）：空串是 nil，带偏移的换算成 UTC；
 // 读不出的投递以 gRPC InvalidArgument 拒绝，不找订阅、不交给处理器。
 func TestDeliveredEnvelopesCarryTheTime(t *testing.T) {
@@ -210,9 +256,17 @@ func TestDeliveredEnvelopesCarryTheTime(t *testing.T) {
 			t.Fatalf("delivery with the time %q: %v %v", text, response, err)
 		}
 	}
-	// 主题没有订阅也是 InvalidArgument：time 在找订阅之前核对
+	// 主题没有订阅也是 InvalidArgument：time 在找订阅之前核对；sdk-envelope-times.json 的 unreadable 每条都经投递核对（ADR-0310）
+	unreadable := []string{"2026-12-31T23:59:60Z", "2026-11-25T03:25:00", "2026-11-25T03:25:00.1234567890Z", "0001-01-01T00:00:00+00:01"}
+	vectors, err := conformance.SDKEnvelopeTimes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range vectors.Unreadable {
+		unreadable = append(unreadable, c.Text)
+	}
 	for _, topic := range []string{"probe.events", "other.events"} {
-		for _, text := range []string{"2026-12-31T23:59:60Z", "2026-11-25T03:25:00", "2026-11-25T03:25:00.1234567890Z", "0001-01-01T00:00:00+00:01"} {
+		for _, text := range unreadable {
 			if response, err := deliver(topic, text); status.Code(err) != codes.InvalidArgument {
 				t.Errorf("delivery on %s with the time %q: %v %v, want InvalidArgument", topic, text, response, err)
 			}
