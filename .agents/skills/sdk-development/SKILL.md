@@ -43,4 +43,4 @@ go list -m github.com/xihanfun/framework-spec/conformance
 2. 新的或改动的向量都被回放：`vectors_test.go` 的 `replayedVectors` 注明回放它的测试，不能回放的列进 `gaps` 写理由。
 3. 新消息键有常量与 `Localization/<区域>.json` 里的模板；文档注释是中文、注明规范章节。
 4. 公开 API 或可观察行为变化时，XiHan.Framework 的 `docs/sdks/go.md` 已同步对应章节与「破坏性改动与迁移」（另一个仓库，单独提交）。
-5. 一项能力一个提交：`<type>(<scope>): <中文说明>`，说明里写 RFC 与 ADR 编号。
+5. 一项能力一个提交：一行 `<type>(<scope>): <中文说明>`，末尾注 ADR 编号，写法见 `commit-msg` 技能。

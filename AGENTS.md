@@ -94,7 +94,7 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 - .NET（XiHan.Framework）是参考实现，行为与它一致：向量的期望值由 .NET 算出；内核错误的码、键与参数与 .NET 相同，en-US 默认模板逐字照 .NET 的语言文件；插件运行时的 10 种区域译文与 `XiHan.Framework.Plugins.Protocol` 的语言文件相同。不随 `encoding/json` 等 Go 库的习惯。
 - 向量回放与一致性档（RFC-0024）：本 SDK 认领 `core`、`plugin` 与 `provider:caching.distributed@1`。`vectors_test.go` 按 `conformance.Profiles()` 的档表核对，认领的档要求的每个向量要么被测试回放（列在 `replayedVectors`，注明回放它的测试），要么列进 `gaps` 并写明理由；规范在认领的档里新增向量时这个测试失败。
 - 规范没写到的行为不自行发明：停下来向用户报告差异，提出规范文字，在 framework-spec 提交（本地克隆 `../framework-spec`）。只属于 Go 的选择（规范不规定的 Go 类型怎样处理）记为 XiHan.Framework 的 ADR 补充，并写进文档页，前例是 ADR-0236 的补充。
-- 公开契约的变化顺序：framework-spec 的 RFC → XiHan.Framework 的 ADR（`plans/adr`）→ 各 SDK。提交说明写明对应的 ADR 编号。
+- 公开契约的变化顺序：framework-spec 的 RFC → XiHan.Framework 的 ADR（`plans/adr`）→ 各 SDK。提交说明末尾注对应的 ADR 编号。
 
 ### 升规范指针
 
@@ -113,7 +113,7 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 
    `file:///` 后面是本机克隆的绝对路径，换机器时照实改。推送本仓库之前，规范的提交必须已推送，否则 CI 解析不到这个伪版本。
 4. 协议有变化时 `buf generate`；跑全部门禁，`vectors_test.go` 指出的新向量要么回放、要么列为缺口。
-5. 子模块指针、`go.mod` 与 `go.sum` 一起提交，或与随规范改动的实现同一提交，说明里写「规范指针与 go.mod 的一致性模块升到 <短哈希>」。
+5. 子模块指针、`go.mod` 与 `go.sum` 一起提交，或与随规范改动的实现同一提交；只升指针的写 `build(spec): 规范指针与一致性模块升到 <短哈希>（ADR-NNNN）`，并进实现的提交说明写实现的结果并注 ADR。
 
 ## 代码规范
 
@@ -160,6 +160,7 @@ framework-sdk-go 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 ## Git 与提交
 
 - Conventional Commits：`<type>(<scope>): <中文说明>`，scope 用本仓库的包名（`primitives`、`manifest`、`invocation`、`pipeline`、`operation`、`plugin`、`caching`、`examples`、`conformance`）或 `spec`、`docs`、`build`、`ci`。
+- 提交信息只写一行标题，不写正文。说明一句话讲这次改动的结果，不超过 40 个字（汉字、字母、数字、标点各算一个，末尾的 `（ADR-NNNN）` 不计）；不再用「：」「；」往下展开，不罗列文件、成员、取值与改前改后，不写测试数量与门禁结果，这些细节写进 文档页、ADR 或 PR 描述。细则见 `commit-msg` 技能。
 - 保留他人已有和无关的改动；只暂存自己的文件，不 reset、checkout 或清理别人的改动。
 - 提交前检查 `git diff --check` 与相关门禁（至少 `gofmt -l .`、`go vet ./...` 与受影响包的测试）。
 - 不推送、不打标签、不发布，除非用户明确要求。
