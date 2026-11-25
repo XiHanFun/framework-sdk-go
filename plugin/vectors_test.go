@@ -254,6 +254,9 @@ func TestRuntimeMessagesFollowTheVectors(t *testing.T) {
 			// 宿主读插件的那一条不在 SDK 里；后两条由 rules.StatusReason 与 errorTypeName 写出，见别的测试
 		case "binding '{binding}' has more than 64 properties", "binding '{binding}' has a property name that is not valid", "the properties of binding '{binding}' exceed 262144 bytes":
 			// 宿主组装 Configure 请求时核对绑定属性的三条（lifecycle.md §2，ADR-0285）不在 SDK 里：SDK 不核对属性名的文法与上限
+		case "binding '{binding}' is required but not provided", "binding '{binding}' is of type '{type}' but the manifest declares '{declared}'",
+			"a file of binding '{binding}' exceeds 524288 bytes", "the files of binding '{binding}' exceed 1048576 bytes", "the configure request exceeds 2097152 bytes":
+			// 宿主下发 Configure 之前核对必需的绑定、类型、绑定目录的文件大小与整个请求大小的五条（lifecycle.md §2，ADR-0292）不在 SDK 里
 		default:
 			text := strings.NewReplacer("{code}", "x", "{results}", "1", "{envelopes}", "2").Replace(reason.Reason)
 			if !slices.Contains(known, any(text)) {
