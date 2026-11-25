@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
-	github.com/xihanfun/framework-spec/conformance v1.0.0-rc.3.0.20261125034755-d82d4bdb4afd
+	github.com/xihanfun/framework-spec/conformance v1.0.0-rc.3.0.20261125130850-e074397f03da
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
 )
