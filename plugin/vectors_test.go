@@ -259,6 +259,9 @@ func TestRuntimeMessagesFollowTheVectors(t *testing.T) {
 			"binding '{binding}' has more than 128 files":
 			// 宿主下发 Configure 之前核对必需的绑定、类型、绑定目录的文件大小与整个请求大小的五条（lifecycle.md §2，ADR-0292），
 			// 与绑定目录的文件数（ADR-0301）不在 SDK 里
+		case "the configuration has a lone surrogate and cannot be encoded as UTF-8", "the response payload is not valid JSON text at '{path}'":
+			// 宿主写配置节时的孤立代理项与宿主读插件交回的应答载荷（lifecycle.md §2、invocation.md §1，ADR-0315）不在 SDK 里：
+			// Go 的配置节由宿主写来，应答载荷 SDK 只写不读
 		default:
 			text := strings.NewReplacer("{code}", "x", "{results}", "1", "{envelopes}", "2").Replace(reason.Reason)
 			if !slices.Contains(known, any(text)) {
