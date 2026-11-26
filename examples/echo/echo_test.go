@@ -52,7 +52,8 @@ func TestEchoPassesTheConformanceSuite(t *testing.T) {
 	command := exec.CommandContext(ctx, runner, "plugin", "--dir", directory, "--json", "--quiet",
 		"--config", `{"greeting":"hello"}`,
 		"--sample", `echoes.create={"text":"conformance"}`,
-		"--exclude", "echoes.crash")
+		"--exclude", "echoes.crash",
+		"--envelopes", "events.list")
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr

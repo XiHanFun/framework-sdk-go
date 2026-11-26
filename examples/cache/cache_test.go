@@ -100,7 +100,8 @@ func TestCachePassesTheConformanceSuite(t *testing.T) {
 
 // expectedSkips 是 cache-go 按运行器的规则应当跳过的用例及其理由；其余用例跳过即失败。
 var expectedSkips = map[string]string{
-	"event": "cache-go declares no subscription, so the runner has nothing to deliver",
+	"event":          "cache-go declares no subscription, so the runner has nothing to deliver",
+	"event-envelope": "cache-go declares no subscription and no operation that echoes the delivered envelopes",
 }
 
 // runnerCases 返回运行器的全部用例名，即一致性模块 plugin 包导出的 AllCases，按执行顺序。

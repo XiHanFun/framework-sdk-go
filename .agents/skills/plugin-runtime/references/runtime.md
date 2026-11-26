@@ -28,7 +28,7 @@
 ## 运行器
 
 - 版本：用 `go.mod` 里一致性模块的版本安装，`go list -m -f '{{.Version}}' github.com/xihanfun/framework-spec/conformance` 取得；示例的测试照这样装到临时 `GOBIN`。规范提交还没推送时，安装同样要按 `AGENTS.md`「升规范指针」的方式从本地克隆解析。
-- 选项：`--dir` 插件目录、`--timeout` 每一步的截止时间、`--config` 下发的配置节 JSON、`--sample op=json` 操作的请求样例、`--exclude op` 不调用的操作、`--case name` 只跑某个用例、`--json` 输出 JSON、`--quiet` 不转发插件的 stderr。退出码 `0` 全部通过（含跳过）、`1` 有用例失败、`2` 参数或目录错误。
-- 运行器把跳过也记为通过：示例的测试先看 `skipped`。`examples/echo` 不许任何跳过，排除会故意崩溃的 `echoes.crash`；`examples/cache` 只允许 `event` 跳过（没有订阅），名单写在 `expectedSkips`。
+- 选项：`--dir` 插件目录、`--timeout` 每一步的截止时间、`--config` 下发的配置节 JSON、`--sample op=json` 操作的请求样例、`--exclude op` 不调用的操作、`--envelopes op` 回显处理器拿到的信封的操作（用例 `event-envelope`，没给即跳过）、`--case name` 只跑某个用例、`--json` 输出 JSON、`--quiet` 不转发插件的 stderr。退出码 `0` 全部通过（含跳过）、`1` 有用例失败、`2` 参数或目录错误。
+- 运行器把跳过也记为通过：示例的测试先看 `skipped`。`examples/echo` 不许任何跳过，排除会故意崩溃的 `echoes.crash`，以 `--envelopes events.list` 指明回显信封的操作；`examples/cache` 只允许 `event` 与 `event-envelope` 跳过（没有订阅），名单写在 `expectedSkips`。
 - 测试核对运行器跑的用例序列等于它的全集：从 `xihan-conformance help` 输出里以 `cases: ` 开头的一行读取，不直接引用一致性模块的 `plugin` 包（它与 `plugin/v1` 重复注册 `plugin.proto`，进同一个二进制就在初始化时 panic）。
 - 运行器不提供宿主回调服务：回调的令牌、权限、本地核对与状态映射由本 SDK 的测试覆盖（回放 `callback-status.json`）。

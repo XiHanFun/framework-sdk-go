@@ -54,9 +54,16 @@ type RelayRequest struct {
 	Payload   json.RawMessage `json:"payload"`
 }
 
-// ListResponse 是 events.list 的响应：收到的事件 ID。
+// ListResponse 是 events.list 的响应：收到的事件 ID，与按收到先后列出的信封（黑盒运行器的用例 event-envelope 读它，invocation.md §7）。
 type ListResponse struct {
-	IDs []string `json:"ids"`
+	IDs       []string           `json:"ids"`
+	Envelopes []EnvelopeReceived `json:"envelopes"`
+}
+
+// EnvelopeReceived 是处理器在一次投递里拿到的信封：ID 与 dataschema（没有时写 null）。
+type EnvelopeReceived struct {
+	ID         string  `json:"id"`
+	DataSchema *string `json:"dataSchema"`
 }
 
 // settings 是配置节 XiHan:Echo。
@@ -71,6 +78,8 @@ type state struct {
 	mu       sync.Mutex
 	greeting string
 	events   []string
+	// envelopes 是处理器拿到的信封，按收到的先后
+	envelopes []EnvelopeReceived
 }
 
 // Options 组装插件运行时的选项。
@@ -179,21 +188,25 @@ func (s *state) crash(*invocation.Context, struct{}) primitives.Result[struct{}]
 	return primitives.Ok(struct{}{})
 }
 
-// list 列出收到的事件 ID。
+// list 列出收到的事件 ID 与信封。
 func (s *state) list(*invocation.Context, struct{}) primitives.Result[ListResponse] {
 	s.mu.Lock()
-	ids := append([]string(nil), s.events...)
+	ids := append([]string{}, s.events...)
+	envelopes := append([]EnvelopeReceived{}, s.envelopes...)
 	s.mu.Unlock()
-	if ids == nil {
-		ids = []string{}
-	}
-	return primitives.Ok(ListResponse{IDs: ids})
+	return primitives.Ok(ListResponse{IDs: ids, Envelopes: envelopes})
 }
 
-// handleEvent 记录投递的事件。
+// handleEvent 记录投递的事件与处理器拿到的 dataschema。
 func (s *state) handleEvent(_ *invocation.Context, envelope plugin.Envelope, _ uint32) primitives.Result[primitives.Unit] {
+	received := EnvelopeReceived{ID: envelope.ID}
+	if envelope.DataSchema != "" {
+		dataSchema := envelope.DataSchema
+		received.DataSchema = &dataSchema
+	}
 	s.mu.Lock()
 	s.events = append(s.events, envelope.ID)
+	s.envelopes = append(s.envelopes, received)
 	s.mu.Unlock()
 	return primitives.Success()
 }

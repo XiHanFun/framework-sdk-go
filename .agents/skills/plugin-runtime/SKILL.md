@@ -27,7 +27,7 @@ description: 实现、修复或审查 framework-sdk-go 的进程外插件运行�
 
 ```bash
 go install github.com/xihanfun/framework-spec/conformance/cmd/xihan-conformance@<go.mod 里一致性模块的版本>
-xihan-conformance plugin --dir <插件目录> --exclude echoes.crash --sample 'echoes.create={"text":"x"}'
+xihan-conformance plugin --dir <插件目录> --exclude echoes.crash --sample 'echoes.create={"text":"x"}' --envelopes events.list
 ```
 
 插件目录里要有 `xihan.manifest.json` 与 `entry` 指向的可执行文件。运行器自带一份协议生成代码，与本 SDK 的 `plugin/v1` 注册同一个 `plugin.proto`，不能链接进同一个二进制，所以测试以独立进程运行它，用例全集从它的 `help` 输出里 `cases: ` 一行读取。
