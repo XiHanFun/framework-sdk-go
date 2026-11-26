@@ -91,6 +91,14 @@ func (m Maybe[T]) MarshalJSON() ([]byte, error) {
 	return jsoncodec.Marshal(m.value)
 }
 
+// jsonValue 是 MarshalJSON 写出的值：有值为值本身，无值为 nil（写 null）
+func (m Maybe[T]) jsonValue() any {
+	if !m.has {
+		return nil
+	}
+	return m.value
+}
+
 // UnmarshalJSON 从线上编码还原：null 为无值。
 func (m *Maybe[T]) UnmarshalJSON(data []byte) error {
 	if string(data) == "null" {

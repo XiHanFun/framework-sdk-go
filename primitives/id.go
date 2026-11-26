@@ -16,3 +16,20 @@ func (id ID[Tag, V]) MarshalJSON() ([]byte, error) { return jsoncodec.Marshal(id
 
 // UnmarshalJSON 从底层值还原。
 func (id *ID[Tag, V]) UnmarshalJSON(data []byte) error { return jsoncodec.Unmarshal(data, &id.Value) }
+
+// jsonValue 是 MarshalJSON 写出的值：底层值
+func (id ID[Tag, V]) jsonValue() any { return id.Value }
+
+// wrapper 是 MarshalJSON 只把里面一个值交给 jsoncodec.Marshal 写出的类型（ID、Maybe）
+type wrapper interface{ jsonValue() any }
+
+// 让 jsoncodec.CheckStrings 往 ID 与 Maybe 里走（RFC-0011 规则 10「编码」，ADR-0318）：它们的 MarshalJSON 把非法的 UTF-8 写成 U+FFFD，
+// 写出的文本里看不出来，要核对的是它们写出的值
+func init() {
+	jsoncodec.SetWrapped(func(value any) (any, bool) {
+		if inner, ok := value.(wrapper); ok {
+			return inner.jsonValue(), true
+		}
+		return nil, false
+	})
+}

@@ -1,6 +1,7 @@
 // Package operation 是操作契约与 XGI 消息（RFC-0011）：业务以操作为单位声明，调用器让它经过完整管道并在 handle 阶段执行；
 // JSON 是 XGI 的规范编码：请求载荷先过共同的 JSON 读取检查（internal/jsontext），再按请求类型解码（internal/jsoncodec，
-// RFC-0011 规则 2：成员名区分大小写、重复成员拒绝、报第一处不符的路径），不交给 encoding/json；响应用 encoding/json 写出。
+// RFC-0011 规则 2：成员名区分大小写、重复成员拒绝、报第一处不符的路径），不交给 encoding/json；响应用 encoding/json 写出，
+// 写不成合法的 JSON 文本（字符串不是合法的 UTF-8 等，RFC-0011 规则 10「编码」，ADR-0318）即写不出，不换成 U+FFFD。
 package operation
 
 import (
@@ -183,9 +184,11 @@ func (d *Descriptor) Execute(ctx *invocation.Context, payload []byte) Response {
 	return Response{Outcome: outcome, Payload: encoded}
 }
 
-// encodeResponse 把响应对象编码成载荷（RFC-0011 规则 10「编码」，ADR-0236）：按响应类型用 encoding/json 写出，类型化的浮点成员是 NaN 或
-// 无穷、或有序列化不支持的值时写不出，不写成 null 或字符串，以 KERNEL_UNEXPECTED_001 + kernel.invocation.unhandled_exception 结束；
-// 原因是框架错误（MarshalJSON 返回或 panic 的 FrameworkError）时它的错误放进 inner。原因只写进 logger，不交给调用方
+// encodeResponse 把响应对象编码成载荷（RFC-0011 规则 10「编码」，ADR-0236、ADR-0318）：按响应类型用 encoding/json 写出，类型化的浮点成员是
+// NaN 或无穷、或有序列化不支持的值时写不出，不写成 null 或字符串；写出的不是合法的 JSON 文本（RFC-0001「JSON 文本」）同样写不出：
+// 要写出的字符串（成员名与值，含映射的键）不是合法的 UTF-8（含编成 UTF-8 的孤立代理项），不写成 U+FFFD，json.Marshaler 交出的原文里
+// 有非法的字节、孤立代理项的转义或重复的成员，或嵌套超过 64 层。都以 KERNEL_UNEXPECTED_001 + kernel.invocation.unhandled_exception 结束；
+// 原因是框架错误（MarshalJSON 返回或 panic 的 FrameworkError）时它的错误放进 inner，写不成合法 JSON 文本的不带 inner。原因只写进 logger，不交给调用方
 func encodeResponse(logger *slog.Logger, ctx *invocation.Context, id string, response any) (encoded []byte, failure *primitives.Error) {
 	fail := func(cause any) {
 		logger.Error("the response of an operation could not be encoded", "operation", id, "traceId", ctx.TraceID(), "error", fmt.Sprint(cause))
@@ -199,6 +202,17 @@ func encodeResponse(logger *slog.Logger, ctx *invocation.Context, id string, res
 	encoded, err := json.Marshal(response)
 	if err != nil {
 		fail(err)
+		return encoded, failure
+	}
+	// 先核对写出的整段文本：MarshalJSON 交出的原文 encoding/json 只核对语法、照抄非法的字节与转义；层数核对过了，
+	// 下面沿同一路径再走一遍时递归有界
+	if problem := jsontext.Check(encoded); problem != nil {
+		fail(fmt.Errorf("the encoded response is not valid JSON text: %w", problem))
+		return encoded, failure
+	}
+	// encoding/json 把非法的 UTF-8 换成 U+FFFD 照常写出，写出的文本里看不出来：按它的规则走到要写出的每个字符串再查一遍
+	if err := jsoncodec.CheckStrings(response); err != nil {
+		fail(fmt.Errorf("the response cannot be written as JSON text: %w", err))
 	}
 	return encoded, failure
 }

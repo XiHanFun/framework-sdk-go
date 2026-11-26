@@ -58,6 +58,49 @@ func TestInvokeChecksInOrder(t *testing.T) {
 	expectStatus(t, "an empty payload", empty.Status, "PROBE_VALIDATION_001", "probe.text.missing", nil)
 }
 
+// TestInvokeReportsResponsesThatCannotBeWritten 核对 invocation.md §1「插件一侧写出应答」与 RFC-0011 规则 10「编码」（ADR-0318）：
+// 类型化的响应里的字符串（值、成员名、数组的项）不是合法的 UTF-8（含编成 UTF-8 的孤立代理项）时应答写不出，Status.error 为
+// KERNEL_UNEXPECTED_001 + kernel.invocation.unhandled_exception，没有参数、不带 inner，payload 为空，不写成 U+FFFD 交给宿主；
+// 多字节文本与真正的 U+FFFD 照常写出。
+func TestInvokeReportsResponsesThatCannotBeWritten(t *testing.T) {
+	responses := map[string]any{
+		"value":     map[string]any{"text": "a\xed\xa0\x80"},
+		"member":    map[string]any{"\xff": "x"},
+		"element":   []any{"ok", "\xed\xb0\x80"},
+		"multibyte": map[string]any{"text": "汉字\U0001F600\xef\xbf\xbd"},
+	}
+	h := launch(t, defaultEnv(), func(opts *Options, _ *recorder) {
+		registry := operation.NewRegistry()
+		echo := operation.HandlerFunc[echoRequest, any](func(_ *invocation.Context, request echoRequest) primitives.Result[any] {
+			return primitives.Ok(responses[request.Text])
+		})
+		if err := operation.Add(registry, operation.Contract{ID: "echoes.create", Stability: primitives.Experimental}, echo, nil, ""); err != nil {
+			t.Fatal(err)
+		}
+		opts.Operations = registry
+	})
+	ctx := deadline(t)
+	h.ready(ctx, nil)
+	invoke := func(text string) *pluginv1.InvokeResponse {
+		t.Helper()
+		response, err := h.client.Invoke(ctx, &pluginv1.InvokeRequest{Operation: "echoes.create", Payload: []byte(`{"text":"` + text + `"}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	for _, text := range []string{"value", "member", "element"} {
+		response := invoke(text)
+		expectStatus(t, "a response with a "+text+" that is not valid UTF-8", response.Status, operation.ErrorCodeUnexpected, invocation.MessageUnhandledException, nil)
+		if response.Status.GetError().GetInner() != nil || len(response.Payload) != 0 {
+			t.Errorf("%s: no inner error and no payload, got %v %q", text, response.Status.GetError().GetInner(), response.Payload)
+		}
+	}
+	if written := invoke("multibyte"); !written.Status.GetOk() || string(written.Payload) != "{\"text\":\"汉字\U0001F600\xef\xbf\xbd\"}" {
+		t.Errorf("multibyte text and U+FFFD are written as they are, got %v %q", written.Status, written.Payload)
+	}
+}
+
 // TestInvokeStreamIsNotImplemented 核对 invocation.md §1：读第一帧，第一帧之前结束或第一帧不是 start 为 InvalidArgument，
 // 是 start 为 Unimplemented，不论操作是否声明、插件是否就绪。
 func TestInvokeStreamIsNotImplemented(t *testing.T) {
