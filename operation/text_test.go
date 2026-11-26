@@ -175,3 +175,34 @@ func TestResponsesThatAreNotJSONTextAreNotWritten(t *testing.T) {
 		}
 	}
 }
+
+// TestNestingIsCountedOverTheWholeText 核对嵌套层数按写出的整段文本计（RFC-0011 规则 10「编码」，ADR-0319）：json.Marshaler 交出的
+// 60 层原文套在 10 层数组里，两段各自都不超过 64 层，合起来 70 层即写不出，以 KERNEL_UNEXPECTED_001 + unhandled_exception 结束、
+// 没有载荷；同样的 60 层套在 4 层里正好 64 层，照常写出
+func TestNestingIsCountedOverTheWholeText(t *testing.T) {
+	raw := rawMarshaled(strings.Repeat("[", 60) + "0" + strings.Repeat("]", 60))
+	within := func(depth int) any {
+		var value any = raw
+		for range depth {
+			value = []any{value}
+		}
+		return value
+	}
+	registry := operation.NewRegistry()
+	register(t, registry, "texts.raw-within-ten", within(10))
+	register(t, registry, "texts.raw-within-four", within(4))
+	invoker, err := operation.NewInvoker(registry, nil, operation.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := invoker.Invoke(invocation.Background(), operation.Request{ID: "texts.raw-within-ten"})
+	assertError(t, response.Outcome.Err(), "KERNEL_UNEXPECTED_001", "kernel.invocation.unhandled_exception", nil, "An unhandled exception occurred during the invocation.")
+	if response.Payload != nil {
+		t.Errorf("70 levels must not be written, got %q", response.Payload)
+	}
+	response = invoker.Invoke(invocation.Background(), operation.Request{ID: "texts.raw-within-four"})
+	if want := strings.Repeat("[", 64) + "0" + strings.Repeat("]", 64); !response.Outcome.OK() || string(response.Payload) != want {
+		t.Errorf("64 levels must be written, got %v %q", response.Outcome, response.Payload)
+	}
+}
