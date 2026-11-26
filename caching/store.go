@@ -84,9 +84,10 @@ type Lookup struct {
 	Found bool
 }
 
-// IsKey 判断键是否合法（RFC-0006「存储契约」，provider/caching-distributed.md §2）：非空、不含空白与控制字符、按 UTF-8 编码后不超过
-// MaxKeyLength 字节。规则只有一致性模块的 rules.IsCacheKey 这一份，宿主一侧的适配器回放的是同一份向量（caching/cache-keys.json）：
-// 空白按 RFC-0001「空白字符」的 25 个码位，不用 unicode.IsSpace；控制字符是 Unicode 的 Cc 类；长度只看字节数，不看字符数。
+// IsKey 判断键是否合法（RFC-0006「存储契约」，provider/caching-distributed.md §2）：非空、是合法的 UTF-8（孤立的代理项在 Go 里是
+// 非法的字节，ADR-0316）、不含空白与控制字符、按 UTF-8 编码后不超过 MaxKeyLength 字节。规则只有一致性模块的 rules.IsCacheKey 这一份，
+// 宿主一侧的适配器回放的是同一份向量（caching/cache-keys.json）：空白按 RFC-0001「空白字符」的 25 个码位，不用 unicode.IsSpace；
+// 控制字符是 Unicode 的 Cc 类；长度只看字节数，不看字符数。
 func IsKey(key string) bool { return rules.IsCacheKey(key) }
 
 // ValidateRefresh 校验 TryRefresh 的存活时间：必须为正，否则返回 CACHING_VALIDATION_002。

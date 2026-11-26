@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/xihanfun/framework-spec/conformance"
 
@@ -215,6 +217,8 @@ func TestKeysRejectTheSpecWhitespace(t *testing.T) {
 // TestKeysFollowTheVectors 回放 cache-keys.json 的键（RFC-0006「存储契约」，provider/caching-distributed.md §2，ADR-0276）：valid 的每个键
 // IsKey 与 ValidateKey 都认、经操作集写得进又读得出，invalid 的每个键以 CACHING_VALIDATION_001 + caching.remote.key_invalid 被拒、到不了 Store；
 // 长度按 UTF-8 字节计，上限 MaxKeyLength 与向量的 maxBytes 相同，UTF-16 码元数不超而字节数超过的键照样被拒。
+// 以 utf16 码元给出的键有孤立的代理项（ADR-0316），在 Go 里是不是合法 UTF-8 的字节，IsKey（rules.IsCacheKey）与 ValidateKey 拒收；
+// 经操作集时它写不进宿主的 JSON，转义写出的请求在解码时就被拒。
 // 向量的 prefixes 是键管理（RFC-0006「键管理」）列出与按前缀删除用的前缀：远程插件不实现键管理，操作集里没有收前缀的操作，本包没有判定前缀的代码
 func TestKeysFollowTheVectors(t *testing.T) {
 	vectors, err := conformance.CacheKeys()
@@ -238,14 +242,15 @@ func TestKeysFollowTheVectors(t *testing.T) {
 	}
 	atLimit := false
 	for _, c := range vectors.Keys.Valid {
-		if len(c.Text) != c.UTF8Bytes {
-			t.Fatalf("%s: the text has %d bytes, the vector says %d", c.Name, len(c.Text), c.UTF8Bytes)
+		key, lone := cacheKeyOf(t, c)
+		if lone {
+			t.Fatalf("%s: a valid key cannot have a lone surrogate", c.Name)
 		}
 		atLimit = atLimit || c.UTF8Bytes == vectors.MaxBytes
-		if !caching.IsKey(c.Text) || caching.ValidateKey(c.Text) != nil {
+		if !caching.IsKey(key) || caching.ValidateKey(key) != nil {
 			t.Errorf("%s: the key must be accepted", c.Name)
 		}
-		requests := requestsFor(t, c.Text)
+		requests := requestsFor(t, key)
 		if response := stored.Invoke(invocation.Background(), operation.Request{ID: caching.OperationSet, Payload: requests[caching.OperationSet]}); !response.Outcome.OK() {
 			t.Errorf("%s: set must accept the key: %v", c.Name, response.Outcome)
 			continue
@@ -259,19 +264,28 @@ func TestKeysFollowTheVectors(t *testing.T) {
 	store := &laxStore{}
 	rejecting := adapt(t, store)
 	countedByUnits := false
+	lonely := 0
 	for _, c := range vectors.Keys.Invalid {
-		if len(c.Text) != c.UTF8Bytes {
-			t.Fatalf("%s: the text has %d bytes, the vector says %d", c.Name, len(c.Text), c.UTF8Bytes)
-		}
+		key, lone := cacheKeyOf(t, c)
 		// 按 UTF-16 码元计不超、按字节计超过的键：只有按字节计才拒得掉
 		countedByUnits = countedByUnits || (c.UTF16Units <= vectors.MaxBytes && c.UTF8Bytes > vectors.MaxBytes)
-		if caching.IsKey(c.Text) {
+		if caching.IsKey(key) {
 			t.Errorf("%s: the key must be rejected", c.Name)
 		}
-		if failure := caching.ValidateKey(c.Text); failure == nil || failure.Code != caching.ErrorCodeInvalidKey || failure.MessageKey != caching.MessageInvalidKey || failure.Details["key"] != c.Text {
+		if failure := caching.ValidateKey(key); failure == nil || failure.Code != caching.ErrorCodeInvalidKey || failure.MessageKey != caching.MessageInvalidKey || failure.Details["key"] != key {
 			t.Errorf("%s: ValidateKey gives %v", c.Name, failure)
 		}
-		failure := rejecting.Invoke(invocation.Background(), operation.Request{ID: caching.OperationGet, Payload: requestsFor(t, c.Text)[caching.OperationGet]}).Outcome.Err()
+		if lone {
+			// 宿主写来的 JSON 里放不进孤立的代理项：转义写出的那份不是合法的 JSON 文本，解码时就以 KERNEL_VALIDATION_001 拒绝、到不了键的校验；
+			// requestsFor 经 encoding/json 写出会把它换成 U+FFFD，得到的是另一个合法的键，所以这里按码元写转义
+			lonely++
+			failure := rejecting.Invoke(invocation.Background(), operation.Request{ID: caching.OperationGet, Payload: escapedKeyRequest(c.UTF16)}).Outcome.Err()
+			if failure == nil || failure.Code != operation.ErrorCodeInvalidPayload || failure.Details["reason"] != "$" {
+				t.Errorf("%s: a request with the key escaped must be rejected as invalid JSON, got %v", c.Name, failure)
+			}
+			continue
+		}
+		failure := rejecting.Invoke(invocation.Background(), operation.Request{ID: caching.OperationGet, Payload: requestsFor(t, key)[caching.OperationGet]}).Outcome.Err()
 		if failure == nil || failure.Code != caching.ErrorCodeInvalidKey || failure.MessageKey != caching.MessageInvalidKey {
 			t.Errorf("%s: get must reject the key, got %v", c.Name, failure)
 		}
@@ -282,4 +296,36 @@ func TestKeysFollowTheVectors(t *testing.T) {
 	if !atLimit || !countedByUnits {
 		t.Errorf("the vector must reach the limit in bytes: a key of %d bytes accepted (%v), a key within the limit in UTF-16 units but over it in bytes rejected (%v)", vectors.MaxBytes, atLimit, countedByUnits)
 	}
+	if lonely == 0 {
+		t.Error("the vector must keep keys with lone surrogates (ADR-0316)")
+	}
+}
+
+// cacheKeyOf 取一条用例的键（ADR-0316）：写了 utf16 的按码元组成，孤立的代理项按 WTF-8 编成不是合法 UTF-8 的字节，lone 为真，
+// 这样的用例不标字节数；其余的键是合法的 UTF-8，字节数必须与向量相符
+func cacheKeyOf(t *testing.T, c conformance.CacheKeyCase) (key string, lone bool) {
+	t.Helper()
+	key, err := c.Input()
+	if err != nil {
+		t.Fatalf("%s: %v", c.Name, err)
+	}
+	if !utf8.ValidString(key) {
+		if c.UTF16 == nil || c.UTF8Bytes != 0 {
+			t.Fatalf("%s: a key with lone surrogates must be given as utf16 code units without utf8Bytes", c.Name)
+		}
+		return key, true
+	}
+	if len(key) != c.UTF8Bytes {
+		t.Fatalf("%s: the key has %d bytes, the vector says %d", c.Name, len(key), c.UTF8Bytes)
+	}
+	return key, false
+}
+
+// escapedKeyRequest 写一个 caching.get 的请求，键按码元逐个写成 \uXXXX 的转义，孤立的代理项照样写出
+func escapedKeyRequest(units conformance.CodeUnits) []byte {
+	var key strings.Builder
+	for _, unit := range units {
+		key.WriteString(`\u` + unit)
+	}
+	return []byte(`{"key":"` + key.String() + `"}`)
 }
