@@ -125,6 +125,9 @@ func TestResponsesThatAreNotJSONTextAreNotWritten(t *testing.T) {
 		"texts.not-addressable": pointerMarshaled{Text: "\xff"},
 		"texts.too-deep":        nested(65),
 		"texts.promoted":        struct{ promotedText }{promotedText{Text: "\xff"}},
+		// Error 与 Result 的线上编码自己写不出（ADR-0320）同样是写不成合法的 JSON 文本，不带 inner
+		"texts.error":  struct{ Failure *primitives.Error }{primitives.Literal("ORDERS_CONFLICT_001", "a\xed\xa0\x80", nil, nil)},
+		"texts.result": primitives.Ok(map[string]string{"text": "\xff"}),
 	}
 	for id, response := range unwritable {
 		register(t, registry, id, response)

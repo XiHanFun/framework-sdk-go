@@ -188,7 +188,8 @@ func (d *Descriptor) Execute(ctx *invocation.Context, payload []byte) Response {
 // NaN 或无穷、或有序列化不支持的值时写不出，不写成 null 或字符串；写出的不是合法的 JSON 文本（RFC-0001「JSON 文本」）同样写不出：
 // 要写出的字符串（成员名与值，含映射的键）不是合法的 UTF-8（含编成 UTF-8 的孤立代理项），不写成 U+FFFD，json.Marshaler 交出的原文里
 // 有非法的字节、孤立代理项的转义或重复的成员，或嵌套超过 64 层。都以 KERNEL_UNEXPECTED_001 + kernel.invocation.unhandled_exception 结束；
-// 原因是框架错误（MarshalJSON 返回或 panic 的 FrameworkError）时它的错误放进 inner，写不成合法 JSON 文本的不带 inner。原因只写进 logger，不交给调用方
+// 原因是框架错误（MarshalJSON 返回或 panic 的 FrameworkError）时它的错误放进 inner，写不成合法 JSON 文本的（含响应里嵌着的 Result 与 Error
+// 自己写不出，ADR-0320）不带 inner。原因只写进 logger，不交给调用方
 func encodeResponse(logger *slog.Logger, ctx *invocation.Context, id string, response any) (encoded []byte, failure *primitives.Error) {
 	fail := func(cause any) {
 		logger.Error("the response of an operation could not be encoded", "operation", id, "traceId", ctx.TraceID(), "error", fmt.Sprint(cause))
@@ -201,6 +202,12 @@ func encodeResponse(logger *slog.Logger, ctx *invocation.Context, id string, res
 	}()
 	encoded, err := json.Marshal(response)
 	if err != nil {
+		// 响应里嵌着的 Result 与 Error 写不成合法的 JSON 文本时报的是框架错误（ADR-0320），这里与整段文本没过检查同样处理、不带 inner
+		var notText *jsoncodec.NotText
+		if errors.As(err, &notText) {
+			fail(fmt.Errorf("the response cannot be written as JSON text: %w", notText))
+			return nil, failure
+		}
 		fail(err)
 		return encoded, failure
 	}

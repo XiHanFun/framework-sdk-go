@@ -1,7 +1,10 @@
 package primitives
 
 import (
+	"errors"
+	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/xihanfun/framework-sdk-go/internal/jsoncodec"
 	"github.com/xihanfun/framework-sdk-go/internal/jsontext"
@@ -161,11 +164,31 @@ func (e *Error) Unwrap() error {
 
 // MarshalJSON 实现线上编码（RFC-0001）：成员按 code、message、messageKey、details、inner 的顺序写出；message 是发送端已解析的文案，
 // 总是写出；messageKey 只在有键时写（Literal 没有键），让接收端可再翻译；details 为空、inner 没有时不写。细节按值模型写出：
-// 整数值的浮点带小数点，非有限值写成字符串，64 位范围内的整数原样（ADR-0236）
+// 整数值的浮点带小数点，非有限值写成字符串，64 位范围内的整数原样（ADR-0236）。
+//
+// 写不成合法的 JSON 文本即写不出（RFC-0001「写出与转交」，ADR-0320），返回 FrameworkError（PRIMITIVES_VALIDATION_001）、不交出文本：
+// 字符串（文案、细节的成员名与值，含内部错误的）不是合法的 UTF-8（含编成 UTF-8 的孤立代理项），不写成 U+FFFD 或 \ud800 这样的转义；
+// 写出的整段文本没过共同检查（从错误的根算起嵌套超过 64 层，细节里原样嵌进去的文本有重复的成员名或孤立代理项的转义）
 func (e *Error) MarshalJSON() ([]byte, error) {
-	encoded := append([]byte(`{"code":`), jsontext.AppendString(nil, e.Code)...)
+	encoded, err := e.appendWire(nil)
+	if err != nil {
+		return nil, err
+	}
+	return checkWireText(encoded, "the error")
+}
+
+// appendWire 把错误的线上编码接在 dst 后面：逐个核对要写出的字符串，整段文本的共同检查由写出的根（MarshalJSON 或 Result）做，
+// 嵌在结果里的错误层数要从结果的根算起
+func (e *Error) appendWire(dst []byte) ([]byte, error) {
+	message := e.Message()
+	for _, member := range [...]struct{ name, text string }{{"code", e.Code}, {"message", message}, {"messageKey", e.MessageKey}} {
+		if !utf8.ValidString(member.text) {
+			return nil, notText("the error", errors.New("the member '"+member.name+"' is not valid UTF-8"))
+		}
+	}
+	encoded := jsontext.AppendString(append(dst, `{"code":`...), e.Code)
 	encoded = append(encoded, `,"message":`...)
-	encoded = jsontext.AppendString(encoded, e.Message())
+	encoded = jsontext.AppendString(encoded, message)
 	if e.MessageKey != "" {
 		encoded = append(encoded, `,"messageKey":`...)
 		encoded = jsontext.AppendString(encoded, e.MessageKey)
@@ -175,16 +198,33 @@ func (e *Error) MarshalJSON() ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		// jsoncodec.Marshal 把非法的字节写成 U+FFFD，写出的文本里看不出来，按值再查一遍
+		if err := jsoncodec.CheckStrings(e.Details); err != nil {
+			return nil, notText("the error", fmt.Errorf("the details: %w", err))
+		}
 		encoded = append(append(encoded, `,"details":`...), details...)
 	}
 	if e.Inner != nil {
-		inner, err := e.Inner.MarshalJSON()
-		if err != nil {
+		var err error
+		if encoded, err = e.Inner.appendWire(append(encoded, `,"inner":`...)); err != nil {
 			return nil, err
 		}
-		encoded = append(append(encoded, `,"inner":`...), inner...)
 	}
 	return append(encoded, '}'), nil
+}
+
+// checkWireText 对写出的整段线上编码做共同检查（RFC-0001「JSON 文本」）：嵌套不超过 64 层、没有重复的成员名、没有孤立代理项的转义与
+// 非法的字节；没过即写不出，返回 FrameworkError（PRIMITIVES_VALIDATION_001）
+func checkWireText(encoded []byte, what string) ([]byte, error) {
+	if problem := jsontext.Check(encoded); problem != nil {
+		return nil, notText(what, problem)
+	}
+	return encoded, nil
+}
+
+// notText 创建线上编码写不成合法 JSON 文本的配置错误（PRIMITIVES_VALIDATION_001）：Cause 是标出这类原因的 jsoncodec.NotText
+func notText(what string, cause error) error {
+	return wireError(what+" cannot be written as JSON text", &jsoncodec.NotText{Err: cause})
 }
 
 // UnmarshalJSON 从线上编码还原（RFC-0001）：先过共同的 JSON 读取检查；code 必填且合法；message 必填、是字符串，不能为空或只有空白；messageKey 有就必须合法；

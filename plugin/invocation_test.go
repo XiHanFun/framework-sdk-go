@@ -2,9 +2,11 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -213,6 +215,46 @@ func TestErrorsAreWrittenWithoutRenderedText(t *testing.T) {
 	}
 	if ToStatus(primitives.Success()).Error != nil || !ToStatus(primitives.Success()).Ok {
 		t.Error("success")
+	}
+}
+
+// TestErrorDetailsThatCannotBeWrittenAreLeftOut 核对 invocation.md §3「写出」与 RFC-0001「写出与转交」（ADR-0320）：细节里的字符串
+// （成员名与值）不是合法的 UTF-8（含编成 UTF-8 的孤立代理项），或写出的文本没过共同检查（嵌套超过 64 层、重复成员、原样嵌进去的
+// 孤立代理项转义），这个错误就不带细节，code、message_key、text 与 inner 照写；内部错误的细节各自核对；多字节文本、真正的 U+FFFD
+// 与正好 64 层照常写出
+func TestErrorDetailsThatCannotBeWrittenAreLeftOut(t *testing.T) {
+	deep := func(depth int) any {
+		var value any = 0
+		for range depth {
+			value = []any{value}
+		}
+		return value
+	}
+	for name, details := range map[string]map[string]any{
+		"a surrogate in a value":     {"id": "o\xed\xa0\x80"},
+		"an invalid byte in a value": {"ids": []any{"ok", "\xff"}},
+		"a surrogate in a name":      {"i\xed\xb0\x80d": 1},
+		"an invalid byte in a name":  {"a": map[string]any{"\xff": 1}},
+		"a raw duplicate":            {"raw": json.RawMessage(`{"a":1,"a":2}`)},
+		"a raw surrogate escape":     {"raw": json.RawMessage(`"\ud800"`)},
+		"65 levels":                  {"deep": deep(64)},
+	} {
+		inner := primitives.Literal("KERNEL_UNEXPECTED_001", "boom", map[string]any{"id": "i1"}, nil)
+		encoded := ToProtoError(primitives.Unexpected("ORDERS_UNEXPECTED_001", "orders.failed", details, inner))
+		if encoded.Code != "ORDERS_UNEXPECTED_001" || encoded.MessageKey != "orders.failed" || encoded.Text != "" || encoded.Details != "" {
+			t.Errorf("%s: the error is written without details, got %+v", name, encoded)
+		}
+		if encoded.Inner == nil || encoded.Inner.Text != "boom" || encoded.Inner.Details != `{"id":"i1"}` {
+			t.Errorf("%s: the inner error is written with its own details, got %+v", name, encoded.Inner)
+		}
+		literal := ToProtoError(primitives.Literal("ORDERS_CONFLICT_001", "stale", nil, primitives.Literal("KERNEL_UNEXPECTED_001", "boom", details, nil)))
+		if literal.Text != "stale" || literal.Inner == nil || literal.Inner.Text != "boom" || literal.Inner.Details != "" {
+			t.Errorf("%s: only the inner error loses its details, got %+v / %+v", name, literal, literal.Inner)
+		}
+	}
+	writable := ToProtoError(primitives.Literal("ORDERS_CONFLICT_001", "stale", map[string]any{"r": "\xef\xbf\xbd", "t": "汉字\U0001F600", "deep": deep(63)}, nil))
+	if want := "{\"deep\":" + strings.Repeat("[", 63) + "0" + strings.Repeat("]", 63) + ",\"r\":\"\xef\xbf\xbd\",\"t\":\"汉字\U0001F600\"}"; writable.Details != want {
+		t.Errorf("details that pass the checks are written, got %q, want %q", writable.Details, want)
 	}
 }
 

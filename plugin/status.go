@@ -15,6 +15,11 @@ import (
 // ToProtoError 把原语层错误编码为协议的 Error（invocation.md §3「写出」）：code 与 message_key 原样；带消息键的错误 text 留空，
 // 由宿主按目录翻译成调用方的语言（RFC-0010），只有自由文本错误（Literal）写 text；details 是按值模型写出的 JSON 对象文本
 // （整数值的浮点带小数点，非有限值写成字符串，ADR-0236），没有时为空；inner 递归写出。
+//
+// 细节写不出时这个错误不带细节、details 为空，其余字段照写（RFC-0001「写出与转交」，ADR-0320）：细节里的字符串（成员名与值）不是
+// 合法的 UTF-8（含编成 UTF-8 的孤立代理项），写出的文本没过共同检查（嵌套超过 64 层、重复的成员名、原样嵌进去的孤立代理项转义），
+// 或值写不出（json.Number 不是数字等）。不写成 U+FFFD 或 \ud800 这样的转义：宿主读到这样的细节也当作没有，两边看到的相同；
+// 内部错误的细节各自核对
 func ToProtoError(err *primitives.Error) *pluginv1.Error {
 	if err == nil {
 		return nil
@@ -24,7 +29,7 @@ func ToProtoError(err *primitives.Error) *pluginv1.Error {
 		encoded.Text = err.Message()
 	}
 	if len(err.Details) > 0 {
-		if details, marshalErr := jsoncodec.Marshal(err.Details); marshalErr == nil {
+		if details, marshalErr := jsoncodec.MarshalChecked(err.Details); marshalErr == nil {
 			encoded.Details = string(details)
 		}
 	}

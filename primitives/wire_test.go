@@ -215,3 +215,36 @@ func TestInvalidNumbersAreNotWrittenToTheWire(t *testing.T) {
 		t.Errorf("a valid number is written as it is: %s (%v)", encoded, err)
 	}
 }
+
+// TestResultsThatAreNotJSONTextAreNotWritten 核对 RFC-0001「写出与转交」（ADR-0320）：Result 的线上编码里成功值与错误的字符串
+// 不是合法的 UTF-8（含编成 UTF-8 的孤立代理项）即写不出；整段文本过共同检查，嵌套从结果的根算起（成功值的最外层是第 2 层），
+// 单独写得出的错误放进结果里超过 64 层也写不出；成功值里原样嵌进去的文本有重复成员同样写不出；正好 64 层照常写出
+func TestResultsThatAreNotJSONTextAreNotWritten(t *testing.T) {
+	// 错误单独写是 64 层（根、细节、62 层数组），放进结果里多一层
+	deepError := primitives.Literal("ORDERS_CONFLICT_001", "stale", map[string]any{"deep": nestedArrays(62)}, nil)
+	if _, err := deepError.MarshalJSON(); err != nil {
+		t.Fatalf("the error alone is 64 levels deep and must be written: %v", err)
+	}
+	unwritable := map[string]json.Marshaler{
+		"a surrogate in the value":         primitives.Ok(map[string]string{"text": "a\xed\xa0\x80"}),
+		"an invalid byte in the value":     primitives.Ok(struct{ Text string }{Text: "\xff"}),
+		"an invalid byte in a value name":  primitives.Ok(map[string]int{"\xff": 1}),
+		"an invalid byte in a maybe":       primitives.Ok(primitives.Some("\xff")),
+		"an invalid byte in a typed id":    primitives.Ok(primitives.NewID[orderTag]("\xff")),
+		"a raw duplicate in the value":     primitives.Ok(json.RawMessage(`{"a":1,"a":2}`)),
+		"a raw surrogate escape":           primitives.Ok(json.RawMessage(`["\udc00"]`)),
+		"a value 65 levels from the root":  primitives.Ok(nestedArrays(64)),
+		"an error 65 levels from the root": primitives.Fail[int](deepError),
+		"an error that is not valid text":  primitives.Fail[primitives.Unit](primitives.Literal("ORDERS_CONFLICT_001", "\xed\xbf\xbf", nil, nil)),
+		"an inner error that is not text":  primitives.Fail[int](primitives.Literal("ORDERS_CONFLICT_001", "stale", nil, primitives.Literal("KERNEL_UNEXPECTED_001", "x", map[string]any{"k": "\xff"}, nil))),
+	}
+	for name, result := range unwritable {
+		assertNotWritten(t, name, result)
+	}
+	if encoded, err := primitives.Ok(nestedArrays(63)).MarshalJSON(); err != nil || string(encoded) != `{"ok":true,"value":`+strings.Repeat("[", 63)+"0"+strings.Repeat("]", 63)+`}` {
+		t.Errorf("a value 64 levels from the root must be written, got %q (%v)", encoded, err)
+	}
+	if encoded, err := primitives.Ok(map[string]string{"r": "\xef\xbf\xbd", "t": "汉字\U0001F600"}).MarshalJSON(); err != nil || string(encoded) != "{\"ok\":true,\"value\":{\"r\":\"\xef\xbf\xbd\",\"t\":\"汉字\U0001F600\"}}" {
+		t.Errorf("multibyte text and a real U+FFFD must be written, got %q (%v)", encoded, err)
+	}
+}

@@ -215,3 +215,34 @@ func omittedAsZero(value reflect.Value) bool {
 	}
 	return value.IsZero()
 }
+
+// MarshalChecked 按值模型写出 value（Marshal），并要求写出的是合法的 JSON 文本（RFC-0001「写出与转交」，ADR-0320）：写出的整段文本
+// 过共同检查（jsontext.Check：嵌套不超过 64 层、没有重复的成员名，json.Marshaler 原样交出的文本里没有非法的字节与孤立代理项的转义），
+// 要写出的每个字符串都是合法的 UTF-8（CheckStrings；Marshal 把编成 UTF-8 的孤立代理项写成 \ud800 这样的转义、其余非法的字节写成
+// U+FFFD，前者在整段文本上查得出，后者只能按值查）。层数从 value 的根算起，嵌在更外层里的由调用方对整段文本另做检查
+func MarshalChecked(value any) ([]byte, error) {
+	encoded, err := Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	if problem := jsontext.Check(encoded); problem != nil {
+		return nil, fmt.Errorf("the written text does not pass the JSON text checks: %w", problem)
+	}
+	if err := CheckStrings(value); err != nil {
+		return nil, err
+	}
+	return encoded, nil
+}
+
+// NotText 标出写不成合法 JSON 文本的原因（RFC-0001「写出与转交」，ADR-0320）：Result 与 Error 的线上编码以它作 FrameworkError 的 Cause；
+// 操作的响应里嵌着它们时，调用器据此按写不成合法的 JSON 文本处理、不带 inner（RFC-0011 规则 10「编码」，ADR-0318）
+type NotText struct {
+	// Err 写明位置：共同检查的问题（*jsontext.Problem）或不是合法 UTF-8 的字符串
+	Err error
+}
+
+// Error 实现 error。
+func (e *NotText) Error() string { return e.Err.Error() }
+
+// Unwrap 支持 errors.Is / errors.As。
+func (e *NotText) Unwrap() error { return e.Err }

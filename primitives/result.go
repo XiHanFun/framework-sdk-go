@@ -116,27 +116,40 @@ func isMaybe[T any]() bool {
 }
 
 // MarshalJSON 实现线上编码（RFC-0001）：有值的成功 {"ok":true,"value":…}，没有值的成功（Result[Unit]）{"ok":true}，
-// 失败 {"ok":false,"error":{…}}；值编码成 null 而值类型不是 Maybe 时报错，可能没有的值用 Maybe
+// 失败 {"ok":false,"error":{…}}；值编码成 null 而值类型不是 Maybe 时报错，可能没有的值用 Maybe。
+//
+// 写不成合法的 JSON 文本即写不出（RFC-0001「写出与转交」，ADR-0320），返回 FrameworkError（PRIMITIVES_VALIDATION_001）、不交出文本：
+// 成功值与错误里的字符串（成员名与值，含映射的键、ID 与 Maybe 里的）不是合法的 UTF-8（含编成 UTF-8 的孤立代理项），
+// 不写成 U+FFFD 或 \ud800 这样的转义；写出的整段文本没过共同检查：嵌套从结果的根算起（成功值的最外层是第 2 层）超过 64 层，
+// 或原样嵌进去的文本（json.Marshaler、json.RawMessage）有重复的成员名、孤立代理项的转义或非法的字节
 func (r Result[T]) MarshalJSON() ([]byte, error) {
 	if !r.ok {
-		encoded, err := r.Err().MarshalJSON()
+		encoded, err := r.Err().appendWire([]byte(`{"ok":false,"error":`))
 		if err != nil {
 			return nil, err
 		}
-		return append(append([]byte(`{"ok":false,"error":`), encoded...), '}'), nil
+		return checkWireText(append(encoded, '}'), "the result")
 	}
 	if isUnit[T]() {
 		return []byte(`{"ok":true}`), nil
 	}
 	// 值按值模型写出：整数值的浮点带小数点，非有限值写成字符串（RFC-0001「Result」，ADR-0236）
-	encoded, err := jsoncodec.Marshal(r.value)
+	value, err := jsoncodec.Marshal(r.value)
 	if err != nil {
 		return nil, err
 	}
-	if string(encoded) == "null" && !isMaybe[T]() {
+	if string(value) == "null" && !isMaybe[T]() {
 		return nil, wireError("a successful result needs a value; a value that may be absent must be a Maybe", nil)
 	}
-	return append(append([]byte(`{"ok":true,"value":`), encoded...), '}'), nil
+	encoded, err := checkWireText(append(append([]byte(`{"ok":true,"value":`), value...), '}'), "the result")
+	if err != nil {
+		return nil, err
+	}
+	// jsoncodec.Marshal 把非法的字节写成 U+FFFD，写出的文本里看不出来：层数核对过了，按值再走一遍
+	if err := jsoncodec.CheckStrings(r.value); err != nil {
+		return nil, notText("the result", fmt.Errorf("the value: %w", err))
+	}
+	return encoded, nil
 }
 
 // UnmarshalJSON 从线上编码还原（RFC-0001）：ok 必须是布尔值；成功不能带 error，有值的成功必须带 value（只有 Maybe 可以是 null），
