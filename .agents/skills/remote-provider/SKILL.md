@@ -16,7 +16,7 @@ description: 设计、实现、审查或诊断 framework-sdk-go 的 caching 包�
 
 | 文件 | 内容 |
 | --- | --- |
-| `caching/store.go` | `Store` 接口（RFC-0006 的六个存储操作加三个批量操作）、操作 ID、错误码 `CACHING_*`、消息键 `caching.remote.*`、键与选项的校验（键的规则是一致性模块的 `rules.IsCacheKey`：非空、不含空白与控制字符、按 UTF-8 编码后不超过 512 字节） |
+| `caching/store.go` | `Store` 接口（RFC-0006 的六个存储操作加三个批量操作）、操作 ID、错误码 `CACHING_*`、消息键 `caching.remote.*`、键与选项的校验（键的规则是一致性模块的 `rules.IsCacheKey`：非空、不含空白、控制字符与孤立的代理项（Go 里即必须是合法的 UTF-8）、按 UTF-8 编码后不超过 512 字节；`examples/cache/Localization` 的模板逐字照 .NET `Caching.Remote` 的目录，不一致时宿主报 `LOCALIZATION_CONFLICT_001`） |
 | `caching/memory.go` | `MemoryStore`：互斥锁串行化，读取时判定过期与延长滑动过期，`DefaultCapacity` / `WithCapacity` 限制条目数，满了先清过期条目、仍满则 `CACHING_UNAVAILABLE_001` |
 | `caching/operations.go` | `RegisterOperations` 把任何 `Store` 登记成操作集；请求与响应结构 |
 | `examples/cache` | 插件示例：清单 `xihan.manifest.json`、配置节 `XiHan:Cache`（`defaultTimeToLiveSeconds`、`maxEntries`）、目录 `Localization/`（`en-US`、`zh-CN`）、入口 `cmd/cache-go` |
