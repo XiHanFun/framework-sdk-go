@@ -1,6 +1,9 @@
 package primitives
 
-import "regexp"
+import (
+	"regexp"
+	"unicode/utf8"
+)
 
 // 已登记的 Baggage 键（conventions/baggage-keys.md）。
 const (
@@ -46,9 +49,12 @@ func IsBaggageKeyRegistered(key string) bool {
 const MaxBaggageValueLength = 256
 
 // IsBaggageValueAcceptable 判断已登记键的值能否进入调用上下文：非空，按 UTF-16 码元计不超过 MaxBaggageValueLength
-// （基本多文种平面以外的字符算两个，与 .NET、JavaScript、Java 的字符串长度相同），不含 U+0000–U+001F 与 U+007F–U+009F
+// （基本多文种平面以外的字符算两个，与 .NET、JavaScript、Java 的字符串长度相同），不含 U+0000–U+001F 与 U+007F–U+009F，
+// 也不含孤立的代理项：Go 的字符串以字节存放，值必须是合法的 UTF-8，编成 UTF-8 的代理项（ED A0 80–ED BF BF）与其他非法的字节
+// 都不合（RFC-0001「孤立的代理项」，ADR-0321）
 func IsBaggageValueAcceptable(value string) bool {
-	if value == "" {
+	// range 把非法的字节读成 U+FFFD 照收，孤立的代理项就是这样混进来的，所以先整串核对
+	if value == "" || !utf8.ValidString(value) {
 		return false
 	}
 	units := 0

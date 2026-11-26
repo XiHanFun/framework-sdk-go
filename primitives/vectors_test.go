@@ -196,18 +196,21 @@ func argumentsOf(t *testing.T, raw json.RawMessage) map[string]any {
 	return arguments
 }
 
-// TestBaggageValuesFollowTheVectors 回放 baggage-keys.json 的 values：已登记键的值能否进入调用上下文
+// TestBaggageValuesFollowTheVectors 回放 baggage-keys.json 的 values：已登记键的值能否进入调用上下文；acceptableUtf16 与
+// unacceptableUtf16 按码元组成 WTF-8 的文本（孤立的代理项编成 ED A0 80–ED BF BF，RFC-0001「孤立的代理项」，ADR-0321），
+// 另加一个 Go 字符串里才有的非法字节
 func TestBaggageValuesFollowTheVectors(t *testing.T) {
 	vectors, err := conformance.BaggageKeys()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, value := range vectors.Values.Acceptable {
+	acceptable, unacceptable := baggageValues(t, vectors.Values)
+	for _, value := range acceptable {
 		if !primitives.IsBaggageValueAcceptable(value) || !primitives.IsBaggageEntryAcceptable(primitives.BaggageTenant, value) {
 			t.Errorf("%q must be acceptable", value)
 		}
 	}
-	for _, value := range vectors.Values.Unacceptable {
+	for _, value := range unacceptable {
 		if primitives.IsBaggageValueAcceptable(value) || primitives.IsBaggageEntryAcceptable(primitives.BaggageCorrelation, value) {
 			t.Errorf("%q must be unacceptable", value)
 		}
@@ -215,6 +218,29 @@ func TestBaggageValuesFollowTheVectors(t *testing.T) {
 			t.Errorf("%q: the idempotency key and unregistered keys are not checked here", value)
 		}
 	}
+}
+
+// baggageValues 返回 baggage-keys.json 的 values 里可以与不可以进入上下文的值：acceptable 与 unacceptable 原样，acceptableUtf16 与
+// unacceptableUtf16 按码元组成文本（c.Input()），不可以的另加一个不是合法 UTF-8 的字节；以码元列出的两组不能是空的
+func baggageValues(t *testing.T, vectors conformance.BaggageValueVectors) (acceptable, unacceptable []string) {
+	t.Helper()
+	if len(vectors.AcceptableUTF16) == 0 || len(vectors.UnacceptableUTF16) == 0 {
+		t.Fatal("the vector lists no values as utf16 code units")
+	}
+	texts := func(cases []conformance.BaggageValueCase) []string {
+		values := make([]string, 0, len(cases))
+		for _, c := range cases {
+			text, err := c.Input()
+			if err != nil {
+				t.Fatal(err)
+			}
+			values = append(values, text)
+		}
+		return values
+	}
+	acceptable = append(append([]string(nil), vectors.Acceptable...), texts(vectors.AcceptableUTF16)...)
+	unacceptable = append(append(append([]string(nil), vectors.Unacceptable...), texts(vectors.UnacceptableUTF16)...), "a\xffb")
+	return acceptable, unacceptable
 }
 
 // TestDuplicatesFollowTheWireEncodingVectors 回放 wire-encoding.json 的 duplicates：同一层有重复成员名的 Result 与 Error 必须被拒绝（ADR-0235）
