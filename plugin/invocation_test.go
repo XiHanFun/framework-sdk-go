@@ -14,6 +14,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/xihanfun/framework-spec/conformance/rules"
 
@@ -255,6 +256,59 @@ func TestErrorDetailsThatCannotBeWrittenAreLeftOut(t *testing.T) {
 	writable := ToProtoError(primitives.Literal("ORDERS_CONFLICT_001", "stale", map[string]any{"r": "\xef\xbf\xbd", "t": "汉字\U0001F600", "deep": deep(63)}, nil))
 	if want := "{\"deep\":" + strings.Repeat("[", 63) + "0" + strings.Repeat("]", 63) + ",\"r\":\"\xef\xbf\xbd\",\"t\":\"汉字\U0001F600\"}"; writable.Details != want {
 		t.Errorf("details that pass the checks are written, got %q, want %q", writable.Details, want)
+	}
+}
+
+// TestErrorTextIsWrittenWithMaximalSubpartsReplaced 核对 invocation.md §3「写出 `Error` 的文案」（ADR-0339）：text（含内部错误的）
+// 编不成合法 UTF-8 的部分按 Unicode §3.9 的最大子部分换成 U+FFFD，每一段一个；合法的多字节字符与本来就是 U+FFFD 的照抄；
+// code、message_key、details 与 inner 照写，整条错误照常编码。期望值与 .NET 的 Encoding.UTF8.GetString、Python 的
+// bytes.decode('utf-8', 'replace') 相同
+func TestErrorTextIsWrittenWithMaximalSubpartsReplaced(t *testing.T) {
+	const r = "\uFFFD"
+	for _, c := range []struct{ name, text, want string }{
+		{"a lone high surrogate", "a\xed\xa0\x80b", "a" + r + r + r + "b"},
+		{"a lone low surrogate", "\xed\xb0\x80", r + r + r},
+		{"a surrogate pair encoded separately", "\xed\xa0\xbd\xed\xb8\x80", r + r + r + r + r + r},
+		{"a supplementary character", "x\U0001F600y", "x\U0001F600y"},
+		{"a real U+FFFD", "\xef\xbf\xbd", r},
+		{"multibyte text", "汉字 é", "汉字 é"},
+		{"a truncated four-byte sequence before ASCII", "\xf0\x9f\x98b", r + "b"},
+		{"an overlong slash", "\xc0\xaf", r + r},
+		{"a truncated three-byte sequence at the end", "x\xe2\x82", "x" + r},
+		{"a truncated two-byte sequence at the end", "\xc2", r},
+		{"a truncated two-byte sequence before ASCII", "\xc2A", r + "A"},
+		{"E0 with a second byte out of range", "\xe0\x80", r + r},
+		{"F4 with a second byte out of range", "\xf4\x90", r + r},
+		{"ED with a second byte out of range", "\xed\xa0", r + r},
+		{"F0 9F before an out-of-range third byte", "\xf0\x9fA", r + "A"},
+		{"a lone continuation byte", "\x80", r},
+		{"bytes that never start a sequence", "\xf5\xff\xfe", r + r + r},
+		{"a truncated sequence before a valid one", "\xe2\x82\xe2\x82\xac", r + "\u20AC"},
+	} {
+		details := map[string]any{"id": "o1"}
+		inner := primitives.Literal("KERNEL_UNEXPECTED_001", "inner "+c.text, map[string]any{"n": 1}, nil)
+		encoded := ToProtoError(primitives.Literal("ORDERS_CONFLICT_001", c.text, details, inner))
+		if encoded.Code != "ORDERS_CONFLICT_001" || encoded.MessageKey != "" || encoded.Text != c.want || encoded.Details != `{"id":"o1"}` {
+			t.Errorf("%s: got %+v, want the text %q", c.name, encoded, c.want)
+		}
+		if encoded.Inner == nil || encoded.Inner.Code != "KERNEL_UNEXPECTED_001" || encoded.Inner.Text != "inner "+c.want || encoded.Inner.Details != `{"n":1}` {
+			t.Errorf("%s: the inner error's text is replaced the same way, got %+v", c.name, encoded.Inner)
+		}
+		// 以前照写非法的 UTF-8，protobuf-go 拒绝编码整条消息，回调、发布与应答都写不出
+		wire, err := proto.Marshal(&pluginv1.Status{Ok: false, Error: encoded})
+		if err != nil {
+			t.Errorf("%s: the whole error is written, got %v", c.name, err)
+			continue
+		}
+		var decoded pluginv1.Status
+		if err := proto.Unmarshal(wire, &decoded); err != nil || decoded.GetError().GetText() != c.want || decoded.GetError().GetInner().GetText() != "inner "+c.want {
+			t.Errorf("%s: the host reads the replaced text, got %+v (%v)", c.name, decoded.GetError(), err)
+		}
+	}
+	// 带消息键的错误不写 text，WithText 填进去的文案即使编不成 UTF-8 也不出现
+	keyed := ToProtoError(primitives.Unexpected("ORDERS_UNEXPECTED_001", "orders.failed", nil, nil).WithText("x\xff"))
+	if keyed.Text != "" || keyed.MessageKey != "orders.failed" {
+		t.Errorf("a keyed error writes no text, got %+v", keyed)
 	}
 }
 

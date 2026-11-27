@@ -33,6 +33,7 @@
 - **修复** 宿主写来的信封 `time` 读不出时投递以 `InvalidArgument` 拒绝（ADR-0306）
 - **修复** 插件写给宿主的错误细节写不出（非法 UTF-8、超过 64 层、重复成员）时这个错误不带细节、其余字段照写，不再写成 U+FFFD 或 `\ud800`（ADR-0320）
 - **修复** 操作的响应里嵌着写不出的 `Result` 或 `Error` 时以 `kernel.invocation.unhandled_exception` 结束、不带 `inner`（ADR-0320）
+- **修复** 插件写给宿主的错误文案（含内部错误的）不是合法的 UTF-8 时按最大子部分换成 U+FFFD 写出，整个回调、发布与应答不再因它编不出（ADR-0339）
 - **修复** 有一处报 `kernel.operation.unknown` 漏了参数 `id`，文案填不出操作 ID
 - **修复** 依赖 `golang.org/x/net` 升到 `v0.60.0`，修掉 4 个经 gRPC 服务端可达的 HTTP/2 漏洞；`go.mod` 的 `go` 指令随之写成 `1.26.0`
 - **调整** 清单 `activation` 里 `onEvent:` 的模式可以带下划线（ADR-0276）

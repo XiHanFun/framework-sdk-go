@@ -2,7 +2,9 @@ package plugin
 
 import (
 	"context"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/xihanfun/framework-spec/conformance/rules"
 
@@ -19,14 +21,17 @@ import (
 // 细节写不出时这个错误不带细节、details 为空，其余字段照写（RFC-0001「写出与转交」，ADR-0320）：细节里的字符串（成员名与值）不是
 // 合法的 UTF-8（含编成 UTF-8 的孤立代理项），写出的文本没过共同检查（嵌套超过 64 层、重复的成员名、原样嵌进去的孤立代理项转义），
 // 或值写不出（json.Number 不是数字等）。不写成 U+FFFD 或 \ud800 这样的转义：宿主读到这样的细节也当作没有，两边看到的相同；
-// 内部错误的细节各自核对
+// 内部错误的细节各自核对。
+//
+// text 是自由文本，编不成合法 UTF-8 的部分按最大子部分换成 U+FFFD 写出（invocation.md §3「写出 Error 的文案」，ADR-0339，见 scrubText），
+// code、message_key、details 与 inner 照上面写：protobuf-go 拒绝编码 string 字段里非法的 UTF-8，以前整个回调、发布与应答都写不出
 func ToProtoError(err *primitives.Error) *pluginv1.Error {
 	if err == nil {
 		return nil
 	}
 	encoded := &pluginv1.Error{Code: err.Code, MessageKey: err.MessageKey}
 	if err.MessageKey == "" {
-		encoded.Text = err.Message()
+		encoded.Text = scrubText(err.Message())
 	}
 	if len(err.Details) > 0 {
 		if details, marshalErr := jsoncodec.MarshalChecked(err.Details); marshalErr == nil {
@@ -37,6 +42,39 @@ func ToProtoError(err *primitives.Error) *pluginv1.Error {
 		encoded.Inner = ToProtoError(err.Inner)
 	}
 	return encoded
+}
+
+// scrubText 把文案里编不成合法 UTF-8 的部分换成 U+FFFD（invocation.md §3「写出 Error 的文案」，ADR-0339）：按 Unicode §3.9 的最大子部分，
+// 从不能解码的位置起，能成为某个合法序列开头的最长前缀是一段，不能的一个字节是一段，每一段换一个 U+FFFD；合法的字符（含本来就是
+// U+FFFD 的）照抄。结果与 .NET 的 Encoding.UTF8.GetString、Python 的 bytes.decode('utf-8', 'replace') 相同。
+func scrubText(text string) string {
+	if utf8.ValidString(text) {
+		return text
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	for i := 0; i < len(text); {
+		r, size := utf8.DecodeRuneInString(text[i:])
+		// 解码出 RuneError 且只占一个字节才是不能解码；占三个字节的是本来就写着的 U+FFFD
+		if r != utf8.RuneError || size > 1 {
+			b.WriteString(text[i : i+size])
+			i += size
+			continue
+		}
+		// DecodeRuneInString 遇到不能解码的只吃一个字节，strings.ToValidUTF8 把连着的一串换成一个，都不是最大子部分：往后加字节，
+		// 直到 FullRuneInString 认为前缀已完整（首字节不能开头、某个后续字节越界）或到了最长的四个字节。因最后加进来的字节越界才完整的，
+		// 那个字节不属于这一段，退回去留给下一轮；到了文本末尾仍不完整的前缀整段算一个
+		n := 1
+		for n < len(text)-i && n < utf8.UTFMax && !utf8.FullRuneInString(text[i:i+n]) {
+			n++
+		}
+		if n > 1 && utf8.FullRuneInString(text[i:i+n]) {
+			n--
+		}
+		b.WriteRune(utf8.RuneError)
+		i += n
+	}
+	return b.String()
 }
 
 // FromProtoError 按 invocation.md §3「读入」还原宿主写来的 Error（规则就是一致性模块的 rules.ReadProtoError，向量 error-reading.json）；
