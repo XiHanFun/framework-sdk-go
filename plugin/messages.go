@@ -67,6 +67,12 @@ const (
 	reasonPanic = "panic"
 )
 
+// reasonLoneSurrogateBaggage 是写进回调元数据的已登记 Baggage 值写不出时的 reason（invocation.md §5，ADR-0347）：只点名键、不带值，
+// 与宿主一侧逐字相同；Go 的字符串以字节存放，不是合法 UTF-8 的值也写这一段。
+func reasonLoneSurrogateBaggage(key string) string {
+	return fmt.Sprintf("baggage '%s' has a lone surrogate and cannot be encoded as UTF-8", key)
+}
+
 // reasonResultCount 是 Host.Publish 的结果数与信封数不同时的 reason（invocation.md §5）。
 func reasonResultCount(results, envelopes int) string {
 	return fmt.Sprintf("the host returned %d results for %d envelopes", results, envelopes)

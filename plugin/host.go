@@ -2,8 +2,10 @@ package plugin
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -54,8 +56,8 @@ func HostOf(ctx *invocation.Context) (*Host, bool) {
 func (h *Host) Endpoint() Endpoint { return h.endpoint }
 
 // Invoke 以插件身份经宿主完整管道调用操作 id（需要权限 capability:kernel.pipeline）。失败按 invocation.md §5：
-// 本地核对不合（plugins.callback.denied、plugins.callback.tenant_denied）或没有回调端点时不发请求；gRPC 失败按映射表
-// （rules.MapCallbackStatus，向量 callback-status.json）；宿主写来的 Status 按 FromStatus 读。
+// 本地核对不合（plugins.callback.denied、plugins.callback.tenant_denied、元数据写不出的 plugins.process.failed）或没有回调端点时
+// 不发请求，先后见 check；gRPC 失败按映射表（rules.MapCallbackStatus，向量 callback-status.json）；宿主写来的 Status 按 FromStatus 读。
 func (h *Host) Invoke(ctx *invocation.Context, id string, payload []byte) operation.Response {
 	if failure := h.check(ctx, rules.CallbackInvoke, id); failure != nil {
 		return operation.Response{Outcome: primitives.Fail[primitives.Unit](failure)}
@@ -120,7 +122,8 @@ func (h *Host) Close() error {
 
 // check 在发出之前依次核对，不合即不发请求（invocation.md §5）：① 有没有可用的回调端点（handshake.md §4）；② 权限（既在清单
 // permissions 里、也在 granted_permissions 里）；③ 租户（回调上下文的 xihan.tenant 必须是某个在途调用或投递的租户），②③ 与宿主给出
-// 同样的错误；④ 回调上下文的截止时间已过或已被取消，结果与映射表相应的一行相同。operationID 是 Host.Invoke 的操作 ID。
+// 同样的错误；④ 回调上下文的截止时间已过或已被取消，结果与映射表相应的一行相同；⑤ 写进 metadata.baggage 的值都是合法的 UTF-8
+// （ADR-0347）。Go 的载荷与信封 data 是字节，原样发出，没有编码这一步。operationID 是 Host.Invoke 的操作 ID。
 func (h *Host) check(ctx *invocation.Context, rpc, operationID string) *primitives.Error {
 	if h.client == nil {
 		return hostUnavailable(h.pluginID, reasonNoCallbackEndpoint)
@@ -139,7 +142,26 @@ func (h *Host) check(ctx *invocation.Context, rpc, operationID string) *primitiv
 	if ctx.Err() != nil {
 		return h.mapStatus(rpc, codes.Canceled, "the callback context is cancelled", true, operationID)
 	}
+	// 元数据排在截止时间之后：权限、租户与截止时间是宿主会给出的错误，写不出请求是本地才有的。protobuf-go 拒绝编码不是合法
+	// UTF-8 的 string 字段，不先核对时回调以 grpc-go 的 Internal 失败，reason 是它的文字
+	if key, ok := unwritableBaggage(ctx); ok {
+		return processFailed(h.pluginID, rules.CallbackPhase(rpc, operationID), reasonLoneSurrogateBaggage(key))
+	}
 	return nil
+}
+
+// unwritableBaggage 返回写进回调 metadata.baggage（上下文里已登记的键，与 ToMetadata 同一个来源）的值里第一个不是合法 UTF-8 的键
+// （invocation.md §5，ADR-0347）。Go 的字符串以字节存放，编成 UTF-8 的孤立代理项也是不合法的 UTF-8；上下文里只有幂等键可能带着这样的值。
+// 几个键都是这样时点名哪一个规范不作规定，这里按键名排序取第一个，只为结果确定；只看是不是合法的 UTF-8，不按 Baggage 值的完整约束判定
+// （幂等键不受长度与控制字符的约束）。
+func unwritableBaggage(ctx *invocation.Context) (string, bool) {
+	baggage := ctx.WithoutUnregisteredBaggage().Baggage()
+	for _, key := range slices.Sorted(maps.Keys(baggage)) {
+		if !utf8.ValidString(baggage[key]) {
+			return key, true
+		}
+	}
+	return "", false
 }
 
 // outgoing 组装回调的 gRPC 上下文：带会话令牌；gRPC 的截止时间与写进元数据的 deadline 相同（invocation.md §5），

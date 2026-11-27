@@ -247,7 +247,7 @@ func TestRuntimeMessagesFollowTheVectors(t *testing.T) {
 	// 读入错误的两条 reason 由 FromProtoError 与 FromStatus（rules.ReadProtoError、ReadProtoStatus）写出
 	invalidCode := FromProtoError(&pluginv1.Error{Code: "x"}, probeID).Details["reason"]
 	withoutError := FromStatus(&pluginv1.Status{}, probeID, "publish").Err().Details["reason"]
-	known := []any{reasonConfigurationNotObject, invalidCode, withoutError, reasonResultCount(1, 2), reasonNoCallbackEndpoint}
+	known := []any{reasonConfigurationNotObject, invalidCode, withoutError, reasonResultCount(1, 2), reasonNoCallbackEndpoint, reasonLoneSurrogateBaggage("x")}
 	for _, reason := range vectors.Reasons {
 		switch reason.Reason {
 		case "the plugin reported a failure without an error", "{status}: {message}", "{type}":
@@ -262,10 +262,8 @@ func TestRuntimeMessagesFollowTheVectors(t *testing.T) {
 		case "the configuration has a lone surrogate and cannot be encoded as UTF-8", "the response payload is not valid JSON text at '{path}'":
 			// 宿主写配置节时的孤立代理项与宿主读插件交回的应答载荷（lifecycle.md §2、invocation.md §1，ADR-0315）不在 SDK 里：
 			// Go 的配置节由宿主写来，应答载荷 SDK 只写不读
-		case "baggage '{key}' has a lone surrogate and cannot be encoded as UTF-8":
-			// SDK 回调宿主之前核对元数据（invocation.md §5，ADR-0347）随下一个提交实现
 		default:
-			text := strings.NewReplacer("{code}", "x", "{results}", "1", "{envelopes}", "2").Replace(reason.Reason)
+			text := strings.NewReplacer("{code}", "x", "{results}", "1", "{envelopes}", "2", "{key}", "x").Replace(reason.Reason)
 			if !slices.Contains(known, any(text)) {
 				t.Errorf("the vector's reason %q has no counterpart in the SDK", reason.Reason)
 			}

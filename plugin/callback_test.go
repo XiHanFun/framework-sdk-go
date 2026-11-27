@@ -429,3 +429,63 @@ func TestPublishResultsFollowTheBatchRules(t *testing.T) {
 		t.Errorf("an empty batch sends nothing, got %v", empty)
 	}
 }
+
+// loneSurrogateReason 是回调元数据里已登记的 Baggage 值有孤立代理项时的 reason（plugin-messages.json，ADR-0347），只点名键、不带值。
+const loneSurrogateReason = "baggage 'xihan.idempotency-key' has a lone surrogate and cannot be encoded as UTF-8"
+
+// withIdempotencyKey 让回调在带着幂等键 value 的上下文里执行：幂等键不按值的约束核对（conventions/baggage-keys.md），
+// 所以上下文里装得下不是合法 UTF-8 的值。
+func withIdempotencyKey(value string, do func(ctx *invocation.Context, host *Host) any) func(ctx *invocation.Context, host *Host) any {
+	return func(ctx *invocation.Context, host *Host) any {
+		return do(ctx.WithBaggage(primitives.BaggageIdempotencyKey, value), host)
+	}
+}
+
+// TestCallbackBaggageThatIsNotUTF8IsNotSent 核对 invocation.md §5 截止时间之后的一项（ADR-0347）：写进回调元数据的已登记 Baggage 值
+// 不是合法的 UTF-8（编成 UTF-8 的孤立代理项、分开编码的一对代理项、不能出现的字节）即不发请求，结果是 PLUGINS_UNEXPECTED_001 +
+// plugins.process.failed，phase 为操作 ID 或 publish，Host.Publish 每一项都是它；平面以外的字符照常发出。截止时间先于它。
+func TestCallbackBaggageThatIsNotUTF8IsNotSent(t *testing.T) {
+	host, address := startFakeHost(t)
+	env := defaultEnv()
+	env[EnvHostAddress] = address
+	h, pending, results := runCallbacks(t, env, nil)
+	h.ready(deadline(t), nil)
+	invokeFailed := map[string]any{"id": probeID, "phase": "orders.create", "reason": loneSurrogateReason}
+	publishFailed := map[string]any{"id": probeID, "phase": "publish", "reason": loneSurrogateReason}
+	for _, c := range []struct{ name, value string }{
+		{"a lone high surrogate", "k\xed\xa0\x80"},
+		{"a lone low surrogate", "\xed\xb0\x80k"},
+		{"a surrogate pair encoded separately", "\xed\xa0\xbd\xed\xb8\x80"},
+		{"a byte that never starts a sequence", "k\xff"},
+	} {
+		before := host.calls()
+		expectError(t, "Host.Invoke with "+c.name, call(t, h, pending, results, nil, withIdempotencyKey(c.value, hostInvoke)).(*primitives.Error), ErrorCodeUnexpected, MessageUnexpected, invokeFailed)
+		expectEvery(t, "Host.Publish with "+c.name, call(t, h, pending, results, nil, withIdempotencyKey(c.value, hostPublish)), 2, ErrorCodeUnexpected, MessageUnexpected, publishFailed)
+		if host.calls() != before {
+			t.Errorf("%s: a callback whose metadata cannot be written must not reach the host", c.name)
+		}
+	}
+
+	// 平面以外的字符是合法的 UTF-8，照常发出，宿主收到的就是这个值
+	supplementary := "k\U0001F600"
+	if err := call(t, h, pending, results, nil, withIdempotencyKey(supplementary, hostInvoke)); err.(*primitives.Error) != nil {
+		t.Fatalf("a supplementary character is sent, got %v", err)
+	}
+	host.mu.Lock()
+	sent := host.invokes[len(host.invokes)-1].Metadata.GetBaggage()[primitives.BaggageIdempotencyKey]
+	host.mu.Unlock()
+	if sent != supplementary {
+		t.Errorf("the host receives the idempotency key %q, want %q", sent, supplementary)
+	}
+
+	// 截止时间先于元数据：宿主会给出的错误先于本地才有的写不出
+	expired := func(ctx *invocation.Context, host *Host) any {
+		late := invocation.New(ctx, invocation.WithDeadline(time.Now().Add(-time.Second)), invocation.WithBaggage(ctx.Baggage()))
+		return hostInvoke(late, host)
+	}
+	before := host.calls()
+	expectError(t, "an expired Host.Invoke with a lone surrogate", call(t, h, pending, results, nil, withIdempotencyKey("\xed\xa0\x80", expired)).(*primitives.Error), "KERNEL_TIMEOUT_001", "kernel.invocation.deadline_exceeded", nil)
+	if host.calls() != before {
+		t.Error("an expired callback must not reach the host")
+	}
+}
