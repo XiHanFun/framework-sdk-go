@@ -4,6 +4,7 @@ import (
 	"context"
 	"maps"
 	"slices"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -22,7 +23,8 @@ import (
 
 // Host 是宿主回调服务的客户端（invocation.md §5）：每次调用带会话令牌，宿主以插件身份执行。
 // 发出之前在本地按宿主的顺序核对权限与租户，不合即不发请求；没有可用的回调端点（handshake.md §4）时一律以
-// PLUGINS_UNAVAILABLE_001 + plugins.host.unavailable 失败。
+// PLUGINS_UNAVAILABLE_001 + plugins.host.unavailable 失败；Close 之后（Serve 返回时运行时关闭它）的回调也不发请求，
+// 同一个错误，reason 为 Unavailable: the host client is closed（ADR-0349）。
 type Host struct {
 	pluginID string
 	// declared 是清单的 permissions：回调所需的权限必须在这里（清单是插件权限的唯一事实源，RFC-0017）
@@ -36,6 +38,9 @@ type Host struct {
 	// conn 与 client 在没有可用的回调端点时为空
 	conn   *grpc.ClientConn
 	client pluginv1.HostClient
+	// closed 在 Close 之后为真（invocation.md §5「回调客户端已关闭」，ADR-0349）：之后的回调不经 grpc-go，
+	// 被关闭切断的在途回调也按它报，不出现 grpc-go 自己的文字
+	closed atomic.Bool
 }
 
 // hostKey 是调用上下文对象袋里放 Host 的键。
@@ -56,8 +61,9 @@ func HostOf(ctx *invocation.Context) (*Host, bool) {
 func (h *Host) Endpoint() Endpoint { return h.endpoint }
 
 // Invoke 以插件身份经宿主完整管道调用操作 id（需要权限 capability:kernel.pipeline）。失败按 invocation.md §5：
-// 本地核对不合（plugins.callback.denied、plugins.callback.tenant_denied、元数据写不出的 plugins.process.failed）或没有回调端点时
-// 不发请求，先后见 check；gRPC 失败按映射表（rules.MapCallbackStatus，向量 callback-status.json）；宿主写来的 Status 按 FromStatus 读。
+// 本地核对不合（plugins.callback.denied、plugins.callback.tenant_denied、元数据写不出的 plugins.process.failed）、没有回调端点
+// 或客户端已关闭时不发请求，先后见 check；gRPC 失败按映射表（rules.MapCallbackStatus，向量 callback-status.json）；
+// 宿主写来的 Status 按 FromStatus 读。
 func (h *Host) Invoke(ctx *invocation.Context, id string, payload []byte) operation.Response {
 	if failure := h.check(ctx, rules.CallbackInvoke, id); failure != nil {
 		return operation.Response{Outcome: primitives.Fail[primitives.Unit](failure)}
@@ -112,9 +118,12 @@ func (h *Host) Publish(ctx *invocation.Context, envelopes ...Envelope) []primiti
 	return results
 }
 
-// Close 断开与宿主的连接。
+// Close 断开与宿主的连接。之后的回调不发请求、不重新连接，以 PLUGINS_UNAVAILABLE_001 + plugins.host.unavailable 失败
+// （reason 为 Unavailable: the host client is closed，invocation.md §5，ADR-0349），被它切断的在途回调也是这个结果
+// （截止时间已到或调用方已取消的照映射表相应的行）；再次调用什么也不做、返回 nil。
 func (h *Host) Close() error {
-	if h.conn == nil {
+	// 先记下已关闭再关连接：被关闭切断的回调拿到 grpc-go 的错误时，一定也看得到已关闭
+	if h.closed.Swap(true) || h.conn == nil {
 		return nil
 	}
 	return h.conn.Close()
@@ -123,7 +132,7 @@ func (h *Host) Close() error {
 // check 在发出之前依次核对，不合即不发请求（invocation.md §5）：① 有没有可用的回调端点（handshake.md §4）；② 权限（既在清单
 // permissions 里、也在 granted_permissions 里）；③ 租户（回调上下文的 xihan.tenant 必须是某个在途调用或投递的租户），②③ 与宿主给出
 // 同样的错误；④ 回调上下文的截止时间已过或已被取消，结果与映射表相应的一行相同；⑤ 写进 metadata.baggage 的值都是合法的 UTF-8
-// （ADR-0347）。Go 的载荷与信封 data 是字节，原样发出，没有编码这一步。operationID 是 Host.Invoke 的操作 ID。
+// （ADR-0347）；⑥ 客户端没有关闭（ADR-0349）。Go 的载荷与信封 data 是字节，原样发出，没有编码这一步。operationID 是 Host.Invoke 的操作 ID。
 func (h *Host) check(ctx *invocation.Context, rpc, operationID string) *primitives.Error {
 	if h.client == nil {
 		return hostUnavailable(h.pluginID, reasonNoCallbackEndpoint)
@@ -135,17 +144,30 @@ func (h *Host) check(ctx *invocation.Context, rpc, operationID string) *primitiv
 	if tenant := ctx.Tenant(); tenant != "" && !h.inFlight(tenant) {
 		return tenantDenied(h.pluginID, tenant)
 	}
+	if ended := h.ended(ctx, rpc, operationID); ended != nil {
+		return ended
+	}
+	// 元数据排在截止时间之后：权限、租户与截止时间是宿主会给出的错误，写不出请求是本地才有的。protobuf-go 拒绝编码不是合法
+	// UTF-8 的 string 字段，不先核对时回调以 grpc-go 的 Internal 失败，reason 是它的文字
+	if key, ok := unwritableBaggage(ctx); ok {
+		return processFailed(h.pluginID, rules.CallbackPhase(rpc, operationID), reasonLoneSurrogateBaggage(key))
+	}
+	// 已关闭不是发出之前的核对而是发出这一步本身，排在其余各项之后（ADR-0328）
+	if h.closed.Load() {
+		return h.closedFailure(rpc, operationID)
+	}
+	return nil
+}
+
+// ended 是 check 的第 ④ 步：回调上下文的截止时间已到（截止令牌已触发或按时钟已过）按 DeadlineExceeded，否则已被取消按
+// 「Cancelled，取消信号已触发」，与映射表相应的一行相同（invocation.md §5，ADR-0246）；都没有时为 nil。
+func (h *Host) ended(ctx *invocation.Context, rpc, operationID string) *primitives.Error {
 	// 截止时间先于取消判定：截止时间到了时上下文也随之结束，按截止令牌归因（RFC-0004），与宿主一侧的 DeadlineMiddleware 一致
 	if deadline, ok := ctx.Deadline(); ctx.DeadlineExceeded() || (ok && !time.Now().Before(deadline)) {
 		return h.mapStatus(rpc, codes.DeadlineExceeded, "the deadline of the callback context has passed", true, operationID)
 	}
 	if ctx.Err() != nil {
 		return h.mapStatus(rpc, codes.Canceled, "the callback context is cancelled", true, operationID)
-	}
-	// 元数据排在截止时间之后：权限、租户与截止时间是宿主会给出的错误，写不出请求是本地才有的。protobuf-go 拒绝编码不是合法
-	// UTF-8 的 string 字段，不先核对时回调以 grpc-go 的 Internal 失败，reason 是它的文字
-	if key, ok := unwritableBaggage(ctx); ok {
-		return processFailed(h.pluginID, rules.CallbackPhase(rpc, operationID), reasonLoneSurrogateBaggage(key))
 	}
 	return nil
 }
@@ -162,6 +184,13 @@ func unwritableBaggage(ctx *invocation.Context) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// closedFailure 是回调客户端已关闭的结果（invocation.md §5「回调客户端已关闭」，ADR-0328、ADR-0349）：与连接失败同一行，
+// PLUGINS_UNAVAILABLE_001 + plugins.host.unavailable，reason 写成 Unavailable: the host client is closed，状态名与说明与
+// TypeScript、Python、PHP、Java 相同。
+func (h *Host) closedFailure(rpc, operationID string) *primitives.Error {
+	return h.mapStatus(rpc, codes.Unavailable, closedClientMessage, false, operationID)
 }
 
 // outgoing 组装回调的 gRPC 上下文：带会话令牌；gRPC 的截止时间与写进元数据的 deadline 相同（invocation.md §5），
@@ -184,6 +213,15 @@ func (h *Host) failure(ctx *invocation.Context, rpc string, err error, operation
 	code, message := codes.Unavailable, err.Error()
 	if grpcStatus, ok := status.FromError(err); ok {
 		code, message = grpcStatus.Code(), grpcStatus.Message()
+	}
+	// Close 切断了在途的回调，或在 check 之后、发出之前关闭时，grpc-go 以 Cancelled 报它自己的文字（grpc: the client connection is closing）：
+	// 与已关闭同一行、同一句 reason，截止时间已到或调用方已取消的照映射表相应的行（invocation.md §5，ADR-0349）。只换这两个状态：
+	// 别的状态是宿主给出的应答，照常映射
+	if h.closed.Load() && (code == codes.Canceled || code == codes.Unavailable) {
+		if ended := h.ended(ctx, rpc, operationID); ended != nil {
+			return ended
+		}
+		return h.closedFailure(rpc, operationID)
 	}
 	return h.mapStatus(rpc, code, message, ctx.Err() != nil, operationID)
 }

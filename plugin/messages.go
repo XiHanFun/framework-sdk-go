@@ -67,6 +67,10 @@ const (
 	reasonPanic = "panic"
 )
 
+// closedClientMessage 是回调客户端已关闭时 reason「<状态名>: <说明>」里的说明（invocation.md §5，ADR-0349）：规范不规定说明，
+// 与 TypeScript、Python、PHP、Java 写同一句，状态名为 Unavailable。
+const closedClientMessage = "the host client is closed"
+
 // reasonLoneSurrogateBaggage 是写进回调元数据的已登记 Baggage 值写不出时的 reason（invocation.md §5，ADR-0347）：只点名键、不带值，
 // 与宿主一侧逐字相同；Go 的字符串以字节存放，不是合法 UTF-8 的值也写这一段。
 func reasonLoneSurrogateBaggage(key string) string {

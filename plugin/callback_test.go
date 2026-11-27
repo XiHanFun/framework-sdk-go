@@ -489,3 +489,115 @@ func TestCallbackBaggageThatIsNotUTF8IsNotSent(t *testing.T) {
 		t.Error("an expired callback must not reach the host")
 	}
 }
+
+// closedUnavailable 是回调客户端已关闭时 plugins.host.unavailable 的细节（invocation.md §5，ADR-0349），与另四个 SDK 同一句 reason。
+var closedUnavailable = map[string]any{"id": probeID, "reason": "Unavailable: the host client is closed"}
+
+// TestCallbacksAfterServeReturnsAreClosed 核对 invocation.md §5「回调客户端已关闭」（ADR-0349）：Serve 返回时关闭回调客户端，之后的回调
+// 不发请求、不经 grpc-go，结果是 PLUGINS_UNAVAILABLE_001 + plugins.host.unavailable，reason 为 Unavailable: the host client is closed；
+// Host.Publish 每一项都是它。它排在最后：截止时间已到报截止时间，元数据写不出报元数据。
+func TestCallbacksAfterServeReturnsAreClosed(t *testing.T) {
+	host, address := startFakeHost(t)
+	env := defaultEnv()
+	env[EnvHostAddress] = address
+	h, pending, results := runCallbacks(t, env, nil)
+	h.ready(deadline(t), nil)
+	var kept *Host
+	call(t, h, pending, results, nil, func(_ *invocation.Context, host *Host) any { kept = host; return nil })
+	_ = h.stdin.Close()
+	if err := h.exited(5 * time.Second); err != nil {
+		t.Fatalf("serve returned %v", err)
+	}
+
+	before := host.calls()
+	ctx := invocation.Background()
+	expectError(t, "Host.Invoke after Serve returned", hostInvoke(ctx, kept).(*primitives.Error), ErrorCodeUnavailable, MessageHostUnavailable, closedUnavailable)
+	expectEvery(t, "Host.Publish after Serve returned", hostPublish(ctx, kept), 2, ErrorCodeUnavailable, MessageHostUnavailable, closedUnavailable)
+	// 已关闭排在其余各项之后
+	expired := invocation.Background(invocation.WithDeadline(time.Now().Add(-time.Second)))
+	expectError(t, "an expired Host.Invoke after Serve returned", hostInvoke(expired, kept).(*primitives.Error), "KERNEL_TIMEOUT_001", "kernel.invocation.deadline_exceeded", nil)
+	unwritable := ctx.WithBaggage(primitives.BaggageIdempotencyKey, "\xed\xa0\x80")
+	expectError(t, "Host.Invoke with a lone surrogate after Serve returned", hostInvoke(unwritable, kept).(*primitives.Error), ErrorCodeUnexpected, MessageUnexpected, map[string]any{"id": probeID, "phase": "orders.create", "reason": loneSurrogateReason})
+	expectEvery(t, "Host.Publish with a lone surrogate after Serve returned", hostPublish(unwritable, kept), 2, ErrorCodeUnexpected, MessageUnexpected, map[string]any{"id": probeID, "phase": "publish", "reason": loneSurrogateReason})
+	if host.calls() != before {
+		t.Error("a callback on a closed host client must not reach the host")
+	}
+	if err := kept.Close(); err != nil {
+		t.Errorf("closing again does nothing, got %v", err)
+	}
+}
+
+// TestClosingTheHostDuringCallbacksIsClosed 核对关闭与回调同时发生（invocation.md §5「回调客户端已关闭」，ADR-0349）：被关闭切断的
+// 在途回调、与关闭同时发出的回调，结果都只会是已关闭的那个错误或正常完成，不会是 grpc-go 自己的文字；Linux 上 CI 以 -race 跑。
+func TestClosingTheHostDuringCallbacksIsClosed(t *testing.T) {
+	fake, address := startFakeHost(t)
+	release := make(chan struct{})
+	entered := make(chan struct{}, 8)
+	// orders.slow 与 ID 为 slow 的信封停在宿主里，直到测试放行；其余的立即应答
+	fake.answer(func(request *pluginv1.InvokeRequest) (*pluginv1.InvokeResponse, error) {
+		if request.Operation == "orders.slow" {
+			entered <- struct{}{}
+			<-release
+		}
+		return &pluginv1.InvokeResponse{Status: &pluginv1.Status{Ok: true}}, nil
+	}, func(request *pluginv1.PublishRequest) (*pluginv1.PublishResponse, error) {
+		if request.Envelopes[0].Id == "slow" {
+			entered <- struct{}{}
+			<-release
+		}
+		return &pluginv1.PublishResponse{Results: []*pluginv1.Status{{Ok: true}}}, nil
+	})
+	defer close(release)
+	endpoint, ok := selectHostEndpoint(address, callbackNetworks)
+	conn, err := dial(endpoint)
+	if !ok || err != nil {
+		t.Fatalf("dial %s: %v", address, err)
+	}
+	host := &Host{pluginID: probeID, declared: allPermissions, granted: func() []string { return allPermissions }, inFlight: func(string) bool { return false }, session: "session-token", endpoint: endpoint, conn: conn, client: pluginv1.NewHostClient(conn)}
+	ctx := invocation.Background()
+
+	// 只会是已关闭的错误或成功；slow 为真的是被关闭切断的在途回调，只能是已关闭的错误
+	expectClosedOrDone := func(what string, failure *primitives.Error, slow bool) {
+		t.Helper()
+		if failure == nil && !slow {
+			return
+		}
+		expectError(t, what, failure, ErrorCodeUnavailable, MessageHostUnavailable, closedUnavailable)
+	}
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() {
+			expectClosedOrDone("an in-flight Host.Invoke", host.Invoke(ctx, "orders.slow", nil).Outcome.Err(), true)
+		})
+		wg.Go(func() {
+			expectClosedOrDone("an in-flight Host.Publish", host.Publish(ctx, Envelope{Topic: "orders.events", ID: "slow"})[0].Err(), true)
+		})
+	}
+	for range 4 {
+		<-entered
+	}
+	var racing sync.WaitGroup
+	for index := range 16 {
+		racing.Go(func() {
+			if index%2 == 0 {
+				expectClosedOrDone("a Host.Invoke racing the close", host.Invoke(ctx, "orders.create", nil).Outcome.Err(), false)
+				return
+			}
+			expectClosedOrDone("a Host.Publish racing the close", host.Publish(ctx, Envelope{Topic: "orders.events", ID: "m"})[0].Err(), false)
+		})
+	}
+	if err := host.Close(); err != nil {
+		t.Errorf("close %v", err)
+	}
+	wg.Wait()
+	racing.Wait()
+	// 与关闭赛跑的请求可能已经写出，宿主在这里之后才收到，所以不比次数，只看关闭之后的这一个操作有没有到宿主
+	expectClosedOrDone("a Host.Invoke after the close", host.Invoke(ctx, "orders.after", nil).Outcome.Err(), true)
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	for _, request := range fake.invokes {
+		if request.Operation == "orders.after" {
+			t.Error("a callback after the close must not reach the host")
+		}
+	}
+}

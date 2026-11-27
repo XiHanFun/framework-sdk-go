@@ -39,6 +39,7 @@
 - **修复** 依赖 `golang.org/x/net` 升到 `v0.60.0`，修掉 4 个经 gRPC 服务端可达的 HTTP/2 漏洞；`go.mod` 的 `go` 指令随之写成 `1.26.0`
 - **调整** 清单 `activation` 里 `onEvent:` 的模式可以带下划线（ADR-0276）
 - **调整** `examples/echo` 的 `events.list` 回显处理器拿到的信封（`envelopes`），黑盒运行器的用例 `event-envelope` 通过（ADR-0327）
+- **调整** `Host` 关闭之后（`Serve` 返回后）与被关闭切断的回调不再经 grpc-go，`reason` 由 `Cancelled: grpc: the client connection is closing` 改为与其他 SDK 相同的 `Unavailable: the host client is closed`；`Host.Close` 可以重复调用（ADR-0349）
 - **调整** 规范指针与一致性模块升到规范 `2bf33b1`
 
 ## v0.2.0-rc.1（2026-11-21）
