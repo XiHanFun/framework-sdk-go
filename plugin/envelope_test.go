@@ -92,37 +92,9 @@ func TestEnvelopeConversionCarriesTheDataSchema(t *testing.T) {
 	}
 }
 
-// writtenTimes 是作者给的时刻与 SDK 写出的 time：换算成 UTC、以 Z 结尾，秒的小数部分去掉末尾的 0、全为 0 时不写小数点；
-// 各语言的 SDK 对同一时刻写出同一份文本（精度以内），Go 的精度是纳秒。
-var writtenTimes = []struct {
-	instant time.Time
-	text    string
-}{
-	{time.Date(2026, 11, 25, 3, 25, 0, 0, time.UTC), "2026-11-25T03:25:00Z"},
-	{time.Date(2026, 11, 25, 3, 25, 0, 500_000_000, time.UTC), "2026-11-25T03:25:00.5Z"},
-	{time.Date(2026, 11, 25, 3, 25, 0, 120_000_000, time.UTC), "2026-11-25T03:25:00.12Z"},
-	{time.Date(2026, 11, 25, 3, 25, 0, 1_000_000, time.UTC), "2026-11-25T03:25:00.001Z"},
-	{time.Date(2026, 11, 25, 3, 25, 0, 123_456_000, time.UTC), "2026-11-25T03:25:00.123456Z"},
-	{time.Date(2026, 11, 25, 3, 25, 0, 123_456_789, time.UTC), "2026-11-25T03:25:00.123456789Z"},
-	{time.Date(2026, 11, 25, 3, 25, 0, 100, time.UTC), "2026-11-25T03:25:00.0000001Z"},
-	{time.Date(2026, 11, 25, 11, 25, 0, 250_000_000, time.FixedZone("UTC+8", 8*3600)), "2026-11-25T03:25:00.25Z"},
-	{time.Date(2026, 11, 24, 22, 25, 0, 0, time.FixedZone("UTC-5", -5*3600)), "2026-11-25T03:25:00Z"},
-	{time.Date(2026, 11, 25, 0, 0, 0, 0, time.FixedZone("UTC+14", 14*3600)), "2026-11-24T10:00:00Z"},
-	{time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC), "0001-01-01T00:00:00Z"},
-	{time.Date(9999, 12, 31, 23, 59, 59, 999_000_000, time.UTC), "9999-12-31T23:59:59.999Z"},
-	{time.Date(9999, 12, 31, 23, 59, 59, 999_999_999, time.UTC), "9999-12-31T23:59:59.999999999Z"},
-}
-
-// TestEnvelopeTimesAreWrittenInUTC 核对 ToProtoEnvelope 写出的 time（invocation.md §4）：nil 写空串；本机时区与带单调时钟读数的时刻同样换算成 UTC。
+// TestEnvelopeTimesAreWrittenInUTC 核对 ToProtoEnvelope 写出的 time（invocation.md §4）里向量表达不了的一条：本机时区与带单调时钟读数的时刻
+// 同样换算成 UTC。写出的各条用例（含 nil 写空串）由 TestSDKEnvelopeTimesFollowTheVectors 回放（ADR-0310、ADR-0340）
 func TestEnvelopeTimesAreWrittenInUTC(t *testing.T) {
-	for _, c := range writtenTimes {
-		if written := ToProtoEnvelope(Envelope{Time: &c.instant}).Time; written != c.text {
-			t.Errorf("%s written as %q, want %q", c.instant, written, c.text)
-		}
-	}
-	if written := ToProtoEnvelope(Envelope{}).Time; written != "" {
-		t.Errorf("no time written as %q, want an empty string", written)
-	}
 	now := time.Now()
 	if written, want := ToProtoEnvelope(Envelope{Time: new(now.Local())}).Time, now.UTC().Format(time.RFC3339Nano); written != want {
 		t.Errorf("a local time written as %q, want %q", written, want)
@@ -130,8 +102,8 @@ func TestEnvelopeTimesAreWrittenInUTC(t *testing.T) {
 }
 
 // TestEnvelopeTimesFollowTheVectors 回放 envelope-times.json（ADR-0293、ADR-0310，向量在 host 与 plugin 档）：valid 的文本经 FromProtoEnvelope 读成
-// UTC 时刻（空串是 nil），invalid 读不出；written 是宿主写给插件的文本，读出的时刻等于 instant；SDK 写出的每个时刻都在 valid 的文法里、
-// 读回同一时刻。Go 的精度是纳秒，九位小数不截断。
+// UTC 时刻（空串是 nil），invalid 读不出；written 是宿主写给插件的文本，读出的时刻等于 instant；读出的时刻再写出、读回同一时刻。
+// SDK 写出的文本读回同一时刻由 TestSDKEnvelopeTimesFollowTheVectors 核对。Go 的精度是纳秒，九位小数不截断。
 func TestEnvelopeTimesFollowTheVectors(t *testing.T) {
 	vectors, err := conformance.EnvelopeTimes()
 	if err != nil {
@@ -182,14 +154,11 @@ func TestEnvelopeTimesFollowTheVectors(t *testing.T) {
 		}
 		expectRead(c.Text, want)
 	}
-	for _, c := range writtenTimes {
-		expectRead(c.text, &c.instant)
-	}
 }
 
 // TestSDKEnvelopeTimesFollowTheVectors 回放 sdk-envelope-times.json 的纳秒一列（invocation.md §4「SDK 读宿主写来的」「SDK 写给宿主的」，
 // ADR-0306、ADR-0310）：writing 的 instant 照原文的偏移构造成 time.Time（与投递的读法读出的是同一时刻），经发布的写出路径 ToProtoEnvelope
-// 写成文本、与 text 逐字比较，null 写空串；reading 的 text 经投递的读入路径 FromProtoEnvelope 读成 UTC 时刻、与 utc 相等；
+// 写成文本、与 text 逐字比较，null 写空串，写出的文本经投递的读法读回同一时刻；reading 的 text 经投递的读入路径 FromProtoEnvelope 读成 UTC 时刻、与 utc 相等；
 // unreadable 读不出（投递以 InvalidArgument 拒绝由 TestDeliveredEnvelopesCarryTheTime 核对）。Go 的精度是纳秒，不截断。
 func TestSDKEnvelopeTimesFollowTheVectors(t *testing.T) {
 	vectors, err := conformance.SDKEnvelopeTimes()
@@ -212,8 +181,13 @@ func TestSDKEnvelopeTimesFollowTheVectors(t *testing.T) {
 			}
 			at = &value
 		}
-		if written := ToProtoEnvelope(Envelope{Topic: "t", ID: "1", Time: at}).Time; written != c.Text.Nanoseconds {
+		written := ToProtoEnvelope(Envelope{Topic: "t", ID: "1", Time: at}).Time
+		if written != c.Text.Nanoseconds {
 			t.Errorf("%s: written as %q, want %q", c.Name, written, c.Text.Nanoseconds)
+		}
+		// 纳秒精度写出不截断，写出的文本在 valid 的文法里、读回同一时刻
+		if back, ok := FromProtoEnvelope(&pluginv1.Envelope{Time: written}); !ok || (at == nil) != (back.Time == nil) || (at != nil && !back.Time.Equal(*at)) {
+			t.Errorf("%s: %q reads back as %v (ok=%v), want %v", c.Name, written, back.Time, ok, at)
 		}
 	}
 	for _, c := range vectors.Reading {
