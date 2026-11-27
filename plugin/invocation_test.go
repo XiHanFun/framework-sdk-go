@@ -259,31 +259,16 @@ func TestErrorDetailsThatCannotBeWrittenAreLeftOut(t *testing.T) {
 	}
 }
 
-// TestErrorTextIsWrittenWithMaximalSubpartsReplaced 核对 invocation.md §3「写出 `Error` 的文案」（ADR-0339）：text（含内部错误的）
-// 编不成合法 UTF-8 的部分按 Unicode §3.9 的最大子部分换成 U+FFFD，每一段一个；合法的多字节字符与本来就是 U+FFFD 的照抄；
-// code、message_key、details 与 inner 照写，整条错误照常编码。期望值与 .NET 的 Encoding.UTF8.GetString、Python 的
-// bytes.decode('utf-8', 'replace') 相同
+// TestErrorTextIsWrittenWithMaximalSubpartsReplaced 核对 invocation.md §3「写出 `Error` 的文案」（ADR-0339）里向量表达不了的部分：
+// 只换 text（含前面另有文字的内部错误的），code、message_key、details 与 inner 照写，整条错误照常编码、宿主读得出；带消息键的错误不写 text。
+// 替换本身由 TestErrorTextWritingFollowsTheVectors 回放 error-text-writing.json 的 bytes 一组（ADR-0346），这里的三例是向量里没有的
+// 第二、三个字节越界的写法，期望值与 .NET 的 Encoding.UTF8.GetString 相同
 func TestErrorTextIsWrittenWithMaximalSubpartsReplaced(t *testing.T) {
 	const r = "\uFFFD"
 	for _, c := range []struct{ name, text, want string }{
-		{"a lone high surrogate", "a\xed\xa0\x80b", "a" + r + r + r + "b"},
-		{"a lone low surrogate", "\xed\xb0\x80", r + r + r},
-		{"a surrogate pair encoded separately", "\xed\xa0\xbd\xed\xb8\x80", r + r + r + r + r + r},
-		{"a supplementary character", "x\U0001F600y", "x\U0001F600y"},
-		{"a real U+FFFD", "\xef\xbf\xbd", r},
-		{"multibyte text", "汉字 é", "汉字 é"},
-		{"a truncated four-byte sequence before ASCII", "\xf0\x9f\x98b", r + "b"},
-		{"an overlong slash", "\xc0\xaf", r + r},
-		{"a truncated three-byte sequence at the end", "x\xe2\x82", "x" + r},
-		{"a truncated two-byte sequence at the end", "\xc2", r},
-		{"a truncated two-byte sequence before ASCII", "\xc2A", r + "A"},
 		{"E0 with a second byte out of range", "\xe0\x80", r + r},
-		{"F4 with a second byte out of range", "\xf4\x90", r + r},
 		{"ED with a second byte out of range", "\xed\xa0", r + r},
 		{"F0 9F before an out-of-range third byte", "\xf0\x9fA", r + "A"},
-		{"a lone continuation byte", "\x80", r},
-		{"bytes that never start a sequence", "\xf5\xff\xfe", r + r + r},
-		{"a truncated sequence before a valid one", "\xe2\x82\xe2\x82\xac", r + "\u20AC"},
 	} {
 		details := map[string]any{"id": "o1"}
 		inner := primitives.Literal("KERNEL_UNEXPECTED_001", "inner "+c.text, map[string]any{"n": 1}, nil)

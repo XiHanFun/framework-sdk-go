@@ -262,6 +262,8 @@ func TestRuntimeMessagesFollowTheVectors(t *testing.T) {
 		case "the configuration has a lone surrogate and cannot be encoded as UTF-8", "the response payload is not valid JSON text at '{path}'":
 			// 宿主写配置节时的孤立代理项与宿主读插件交回的应答载荷（lifecycle.md §2、invocation.md §1，ADR-0315）不在 SDK 里：
 			// Go 的配置节由宿主写来，应答载荷 SDK 只写不读
+		case "baggage '{key}' has a lone surrogate and cannot be encoded as UTF-8":
+			// SDK 回调宿主之前核对元数据（invocation.md §5，ADR-0347）随下一个提交实现
 		default:
 			text := strings.NewReplacer("{code}", "x", "{results}", "1", "{envelopes}", "2").Replace(reason.Reason)
 			if !slices.Contains(known, any(text)) {
@@ -307,6 +309,30 @@ func TestErrorReadingFollowsTheVectors(t *testing.T) {
 	}
 	if read == 0 {
 		t.Error("the vectors must have cases of the plugin reading the host")
+	}
+}
+
+// TestErrorTextWritingFollowsTheVectors 回放 error-text-writing.json 的 bytes 一组（invocation.md §3「写出 Error 的文案」，ADR-0339、ADR-0346）：
+// Go 的字符串以字节存放，每例的原始字节作为自由文本错误的文案经 ToProtoError 写出，顶层与内部错误的 text 都等于期望值；
+// utf16 与 codePoints 两组是以 UTF-16 与码点存放字符串的实现回放的，Go 不按 WTF-8 回放 utf16。
+func TestErrorTextWritingFollowsTheVectors(t *testing.T) {
+	vectors, err := conformance.ErrorTextWriting()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vectors.Bytes) == 0 {
+		t.Fatal("the vectors must have byte cases")
+	}
+	for _, c := range vectors.Bytes {
+		raw, err := c.Bytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		inner := primitives.Literal("KERNEL_UNEXPECTED_001", string(raw), nil, nil)
+		encoded := ToProtoError(primitives.Literal("ORDERS_CONFLICT_001", string(raw), nil, inner))
+		if encoded.Text != c.Expected || encoded.GetInner().GetText() != c.Expected {
+			t.Errorf("%s: ToProtoError writes %q and the inner %q, want %q", c.Name, encoded.Text, encoded.GetInner().GetText(), c.Expected)
+		}
 	}
 }
 

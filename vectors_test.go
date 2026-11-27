@@ -20,6 +20,7 @@ var replayedVectors = []string{
 	"plugin/deadlines.json",                   // plugin.TestDeadlinesFollowTheVectors
 	"plugin/envelope-times.json",              // plugin.TestEnvelopeTimesFollowTheVectors（valid 与 invalid 是 SDK 的读入，written 是宿主的写法，ADR-0310）
 	"plugin/error-reading.json",               // plugin.TestErrorReadingFollowsTheVectors
+	"plugin/error-text-writing.json",          // plugin.TestErrorTextWritingFollowsTheVectors（bytes；utf16 与 codePoints 是别的存放方式）
 	"plugin/handshake-lines.json",             // plugin.TestHandshakeLinesFollowTheVectors
 	"plugin/host-addresses.json",              // plugin.TestHostAddressesFollowTheVectors
 	"plugin/plugin-messages.json",             // plugin.TestRuntimeMessagesFollowTheVectors
